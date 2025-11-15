@@ -4,39 +4,15 @@ import logging
 import httpx
 
 
-async def list_events(limit: int, offset: int):
-    """ List popular events that are being traded on Polymarket.
-
-    Each event contains multiple markets. Each market has 2 outcomes (e.g., YES/NO).
-    Args:
-        limit (int): The maximum number of events to return.
-        offset (int): The number of events to skip before starting to collect the result set. Used for pagination.
-    Returns:
-        list[dict]: A list of event dictionaries. Including the event_slug (used to unique identify the event), the question of this event, description, markets (with their prices and token IDs), volume, category, and end_date.
-    """
-    base_url = "https://gamma-api.polymarket.com/events"
-
-    # Query parameters to get top markets by volume
-    params = {
-        "limit": limit,
-        "offset": offset,
-        "order": "volume",
-        "ascending": "false",  # Highest volume first
-        "closed": "false",  # Only active markets
-    }
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(base_url, params=params)
-        response.raise_for_status()
-        events = response.json()
-
-    # Extract and format relevant information
+def format_events(events: list[dict]) -> list[dict]:
     formatted_events = []
     for event in events:
         # Parse markets if it's a JSON string
         markets = event.get("markets")
         if isinstance(markets, str):
             markets = json.loads(markets)
+        if not markets:
+            continue
 
         formatted_markets = []
         for market in markets:
@@ -86,28 +62,73 @@ async def list_events(limit: int, offset: int):
     return formatted_events
 
 
-def get_market_price(token_id: str, side: str) -> float:
-    """ Get the current market price for a given token ID and side.
+async def list_events(limit: int, offset: int) -> list[dict]:
+    """ List popular events that are being traded on Polymarket.
+
+    Each event contains multiple markets. Each market has 2 outcomes (e.g., YES/NO).
     Args:
-        token_id (str): The token ID of the market and side you are querying.
-        side (str): The side of the market, either "BUY" or "SELL".
+        limit (int): The maximum number of events to return.
+        offset (int): The number of events to skip before starting to collect the result set. Used for pagination.
     Returns:
-        float: The current market price.
+        list[dict]: A list of event dictionaries. Including the event_slug (used to unique identify the event), the question of this event, description, markets (with their prices and token IDs), volume, category, and end_date.
     """
-    logging.info(f"get_market_price for token_id: {token_id} on side: {side}")
-    return 100.5
+    base_url = "https://gamma-api.polymarket.com/events"
+
+    # Query parameters to get top markets by volume
+    params = {
+        "limit": limit,
+        "offset": offset,
+        "order": "volume",
+        "ascending": "false",  # Highest volume first
+        "closed": "false",  # Only active markets
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(base_url, params=params)
+        response.raise_for_status()
+        events = response.json()
+
+    return format_events(events)
 
 
-def place_order(price: float, size: int, token_id: str, side: str) -> bool:
-    """ Place an order on the Polymarket.
+async def search_events_and_markets(search_query: str, page: int) -> list[dict]:
+    """ Search for events and markets on Polymarket by a free-form query string.
     Args:
-        price (float): The limit price you wish to trade.
+        search_query (str): The free-form query string to search.
+        page (int): The search result page number to return (starting from 0).
+    Returns:
+        list[dict]: A list of event dictionaries. Including the event_slug (used to unique identify the event), the question of this event, description, markets (with their prices and token IDs), volume, category, and end_date.
+    """
+    base_url = "https://gamma-api.polymarket.com/public-search"
+
+    params = {
+        "q": search_query,
+        "page": page,
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(base_url, params=params)
+        response.raise_for_status()
+        search_results = response.json()
+
+    events = search_results.get("events")
+    if isinstance(events, str):
+        events = json.loads(events)
+    if not events:
+        return []
+    return format_events(events)
+
+
+async def place_order_at_market_price(market_slug: str, outcome: str, side: str, size: int) -> bool:
+    """ Place an order on the Polymarket at the current market price.
+    Args:
+        market_slug (str): The slug (i.e. the unique identifier) of the market you are trading on.
+        outcome (str): The outcome you are trading (e.g., "YES" or "NO").
+        side (str): The side of the order, either "BUY" or "SELL".
         size (int): Quantity of shares you wish to trade.
-        token_id (str): The token ID of the market and side you are trading.
-        side (Side): The side of the order, either "BUY" or "SELL".
     Returns:
         bool: True if the order was placed successfully, False otherwise.
     """
     logging.info(
-        f"place_order for token_id: {token_id} on side: {side} with size: {size} at price: {price}")
+        f"place_order_at_market_price on market_slug: {market_slug}, outcome: {outcome}, side: {side}, size: {size}")
     return True
