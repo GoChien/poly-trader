@@ -16,7 +16,7 @@ Navigate to the `trading-agents` directory and start the API server:
 
 ```bash
 cd trading-agents
-uv run adk api_server
+uv run fastapi dev main.py
 ```
 
 ### 3. Start the Agent Operator Server

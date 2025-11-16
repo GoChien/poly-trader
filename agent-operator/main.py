@@ -24,7 +24,7 @@ async def run_agent():
     """
     app_name = "agents"
     user_id = "tester"
-    message_text = "Hello"
+    message_text = "Tell me about the current market status"
     session_id = str(uuid.uuid4())
     
     async with httpx.AsyncClient() as client:
