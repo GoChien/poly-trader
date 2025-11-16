@@ -1,7 +1,7 @@
 from google.adk.tools import ToolContext
 
 # Use the 'user:' prefix for persistence across sessions
-NOTEBOOK_KEY = "user:long_term_strategy_note"
+STRATEGY_NOTE_KEY = "user:long_term_strategy_note"
 
 
 def read_strategy_note(tool_context: ToolContext) -> str:
@@ -11,7 +11,7 @@ def read_strategy_note(tool_context: ToolContext) -> str:
     Returns:
         str: The content of the strategy note.
     """
-    return tool_context.state.get(NOTEBOOK_KEY, "The notebook is currently empty.")
+    return tool_context.state.get(STRATEGY_NOTE_KEY, "The strategy note is currently empty.")
 
 
 def overwrite_strategy_note(note_content: str, tool_context: ToolContext) -> None:
@@ -21,6 +21,4 @@ def overwrite_strategy_note(note_content: str, tool_context: ToolContext) -> Non
     Args:
         note_content (str): The content to overwrite into the strategy note.
     """
-    # Use the 'user:' prefix for persistence across sessions
-    NOTEBOOK_KEY = "user:long_term_strategy_note"
-    tool_context.state[NOTEBOOK_KEY] = note_content
+    tool_context.state[STRATEGY_NOTE_KEY] = note_content
