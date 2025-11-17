@@ -27,7 +27,15 @@ async def run_agent():
     message_text = "Tell me about the current market status"
     session_id = str(uuid.uuid4())
     
-    async with httpx.AsyncClient() as client:
+    # Set a longer timeout for agent operations (default is 5 seconds)
+    timeout = httpx.Timeout(
+        connect=10.0,  # Connection timeout
+        read=300.0,    # Read timeout (5 minutes for long-running agents)
+        write=10.0,    # Write timeout
+        pool=10.0      # Pool timeout
+    )
+    
+    async with httpx.AsyncClient(timeout=timeout) as client:
         # First: Create a session
         session_url = f"{AGENT_URL}/apps/{app_name}/users/{user_id}/sessions/{session_id}"
         try:
