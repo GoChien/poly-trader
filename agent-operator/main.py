@@ -62,9 +62,26 @@ async def run_agent():
                 headers={"Content-Type": "application/json"}
             )
             run_response.raise_for_status()
-            return run_response.json()
+            
+            # Log response details for debugging
+            print(f"Run response status: {run_response.status_code}")
+            print(f"Run response headers: {run_response.headers}")
+            print(f"Run response content-type: {run_response.headers.get('content-type', 'unknown')}")
+            
+            # Try to parse JSON response
+            try:
+                return run_response.json()
+            except Exception as json_error:
+                print(f"Failed to parse JSON response: {json_error}")
+                print(f"Response text: {run_response.text[:500]}")  # First 500 chars
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to parse agent response: {str(json_error)}"
+                )
+                
         except httpx.HTTPError as e:
+            print(f"HTTP Error occurred: {type(e).__name__}: {str(e)}")
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to run agent: {str(e)}"
+                detail=f"Failed to run agent: {type(e).__name__}: {str(e)}"
             )

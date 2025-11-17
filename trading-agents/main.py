@@ -10,6 +10,9 @@ AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
 SESSION_SERVICE_URI = "sqlite:///./sessions.db"
 # Example allowed origins for CORS
 ALLOWED_ORIGINS = ["http://localhost", "http://localhost:8080", "*"]
+# Add CLIENT_URL from environment variable if set
+if os.environ.get("CLIENT_URL"):
+    ALLOWED_ORIGINS.append(os.environ.get("CLIENT_URL"))
 # Set web=True if you intend to serve a web interface, False otherwise
 SERVE_WEB_INTERFACE = True
 
