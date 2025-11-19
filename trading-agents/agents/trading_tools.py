@@ -1,10 +1,12 @@
+import asyncio
 import json
 import logging
 import os
 import httpx
 
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+from py_clob_client.clob_types import BalanceAllowanceParams, AssetType, OrderArgs, OrderType
+from py_clob_client.order_builder.constants import BUY, SELL
 
 
 def format_events(events: list[dict]) -> list[dict]:
@@ -109,7 +111,7 @@ async def search_events_and_markets(search_query: str, page: int) -> list[dict]:
         "page": page,
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.get(base_url, params=params)
         response.raise_for_status()
         search_results = response.json()
@@ -122,7 +124,7 @@ async def search_events_and_markets(search_query: str, page: int) -> list[dict]:
     return format_events(events)
 
 
-async def place_order_at_market_price(market_slug: str, outcome: str, side: str, size: int) -> bool:
+async def place_order_at_market_price(market_slug: str, outcome: str, side: str, size: int) -> dict:
     """ Place an order on the Polymarket at the current market price.
     Args:
         market_slug (str): The slug (i.e. the unique identifier) of the market you are trading on.
@@ -130,11 +132,135 @@ async def place_order_at_market_price(market_slug: str, outcome: str, side: str,
         side (str): The side of the order, either "BUY" or "SELL".
         size (int): Quantity of shares you wish to trade.
     Returns:
-        bool: True if the order was placed successfully, False otherwise.
+        dict: A dictionary containing:
+            - success (bool): Whether the order was placed successfully
+            - order_id (str): The order ID if successful
+            - price (float): The price at which the order was placed
+            - size_requested (float): The number of shares requested
+            - message (str): Success or error message
+            - response (dict): Full response from the API if successful
     """
     logging.info(
         f"place_order_at_market_price on market_slug: {market_slug}, outcome: {outcome}, side: {side}, size: {size}")
-    return True
+    
+    try:
+        # Step 1: Get market details to obtain token_id and current price
+        base_url = f"https://gamma-api.polymarket.com/markets/slug/{market_slug}"
+        
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            response = await http_client.get(base_url)
+            response.raise_for_status()
+            market_data = response.json()
+        
+        # Parse market data to get token_id and current price
+        outcomes = market_data.get("outcomes")
+        if isinstance(outcomes, str):
+            outcomes = json.loads(outcomes)
+        
+        outcome_prices = market_data.get("outcomePrices")
+        if isinstance(outcome_prices, str):
+            outcome_prices = json.loads(outcome_prices)
+        
+        token_ids = market_data.get("clobTokenIds")
+        if isinstance(token_ids, str):
+            token_ids = json.loads(token_ids)
+        
+        # Find the token_id and price for the specified outcome
+        token_id = None
+        current_price = None
+        for i, out in enumerate(outcomes):
+            if out.upper() == outcome.upper():
+                token_id = token_ids[i]
+                current_price = float(outcome_prices[i])
+                break
+        
+        if not token_id:
+            error_msg = f"Outcome '{outcome}' not found in market '{market_slug}'"
+            logging.error(error_msg)
+            return {
+                "success": False,
+                "order_id": None,
+                "price": None,
+                "size_requested": float(size),
+                "message": error_msg,
+                "response": None
+            }
+        
+        logging.info(f"Found token_id: {token_id}, current price: {current_price}")
+        
+        # Step 2: Initialize ClobClient
+        HOST = "https://clob.polymarket.com"
+        CHAIN_ID = 137
+        PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY")
+        FUNDER = os.getenv("POLYMARKET_PROXY_ADDRESS")
+        
+        if not PRIVATE_KEY or not FUNDER:
+            error_msg = "POLYMARKET_PRIVATE_KEY or POLYMARKET_PROXY_ADDRESS not set in environment"
+            logging.error(error_msg)
+            return {
+                "success": False,
+                "order_id": None,
+                "price": current_price,
+                "size_requested": float(size),
+                "message": error_msg,
+                "response": None
+            }
+        
+        client = ClobClient(
+            HOST,
+            key=PRIVATE_KEY,
+            chain_id=CHAIN_ID,
+            signature_type=1,  # 1 for email/Magic wallet, 2 for browser wallet
+            funder=FUNDER
+        )
+        
+        # Set API credentials (run in thread to avoid blocking)
+        api_creds = await asyncio.to_thread(client.create_or_derive_api_creds)
+        client.set_api_creds(api_creds)
+        
+        # Step 3: Convert side string to constant
+        order_side = BUY if side.upper() == "BUY" else SELL
+        
+        # Step 4: Create order arguments
+        order_args = OrderArgs(
+            price=current_price,
+            size=float(size),
+            side=order_side,
+            token_id=token_id,
+        )
+        
+        # Step 5: Sign the order (run in thread to avoid blocking)
+        signed_order = await asyncio.to_thread(client.create_order, order_args)
+        
+        # Step 6: Post the order as GTC (Good-Till-Cancelled) (run in thread to avoid blocking)
+        resp = await asyncio.to_thread(client.post_order, signed_order, OrderType.GTC)
+        
+        logging.info(f"Order placed successfully: {resp}")
+        
+        # Extract order details from response
+        order_id = resp.get("orderID") if isinstance(resp, dict) else None
+        
+        return {
+            "success": True,
+            "order_id": order_id,
+            "price": current_price,
+            "size_requested": float(size),
+            "message": "Order placed successfully",
+            "response": resp
+        }
+        
+    except Exception as e:
+        error_msg = f"Error placing order: {e}"
+        logging.error(error_msg)
+        return {
+            "success": False,
+            "order_id": None,
+            "price": None,
+            "size_requested": float(size),
+            "message": error_msg,
+            "response": None
+        }
+
 
 def get_cash_balance():
     """ Get the cash balance of the user.
