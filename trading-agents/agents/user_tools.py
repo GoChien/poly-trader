@@ -1,11 +1,8 @@
-import asyncio
-import json
-import logging
 import os
 import httpx
 
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import BalanceAllowanceParams, AssetType, OrderArgs, OrderType
+from py_clob_client.clob_types import BalanceAllowanceParams, AssetType, OpenOrderParams
 from py_clob_client.order_builder.constants import BUY, SELL
 
 def get_cash_balance():
@@ -111,4 +108,48 @@ async def get_user_positions(
         formatted_positions.append(formatted_pos)
     
     return formatted_positions
+
+
+def get_active_orders() -> list[dict]:
+    """Get all active orders for the user from Polymarket CLOB.
+    
+    This function retrieves all open/active orders that haven't been filled or cancelled yet.
+    
+    Returns:
+        list[dict]: A list of active order dictionaries with information including:
+            - order_id: The unique identifier for the order
+            - market: The market condition ID
+            - asset_id: The asset/token ID
+            - price: The order price
+            - size: The order size
+            - side: BUY or SELL
+            - type: Order type (GTC, FOK, GTD)
+            - timestamp: When the order was created
+            And other order details returned by the API
+    """
+    # Initialize client
+    HOST = "https://clob.polymarket.com"
+    CHAIN_ID = 137
+    PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY")
+    FUNDER = os.getenv("POLYMARKET_PROXY_ADDRESS")  # Your Polymarket proxy address
+
+    if not PRIVATE_KEY:
+        raise ValueError("POLYMARKET_PRIVATE_KEY not set in environment")
+    if not FUNDER:
+        raise ValueError("POLYMARKET_PROXY_ADDRESS not set in environment")
+
+    client = ClobClient(
+        HOST,
+        key=PRIVATE_KEY,
+        chain_id=CHAIN_ID,
+        signature_type=1,  # 1 for email/Magic wallet, 2 for Metamask
+        funder=FUNDER
+    )
+
+    client.set_api_creds(client.create_or_derive_api_creds())
+
+    # Get all active orders
+    orders = client.get_orders(OpenOrderParams())
+    
+    return orders
 
