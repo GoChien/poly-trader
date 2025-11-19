@@ -261,3 +261,80 @@ async def place_order(market_slug: str, outcome: str, side: str, price: float, s
         }
 
 
+async def cancel_order(order_id: str) -> dict:
+    """ Cancel a single order on Polymarket.
+    
+    Args:
+        order_id (str): The ID of the order to cancel.
+    Returns:
+        dict: A dictionary containing:
+            - success (bool): Whether the order was cancelled successfully
+            - canceled (list): List of canceled order IDs
+            - not_canceled (dict): Order ID to reason map for orders that couldn't be canceled
+            - message (str): Success or error message
+            - response (dict): Full response from the API if successful
+    """
+    logging.info(f"Canceling order: {order_id}")
+    
+    try:
+        # Initialize ClobClient
+        HOST = "https://clob.polymarket.com"
+        CHAIN_ID = 137
+        PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY")
+        FUNDER = os.getenv("POLYMARKET_PROXY_ADDRESS")
+        
+        if not PRIVATE_KEY or not FUNDER:
+            error_msg = "POLYMARKET_PRIVATE_KEY or POLYMARKET_PROXY_ADDRESS not set in environment"
+            logging.error(error_msg)
+            return {
+                "success": False,
+                "canceled": [],
+                "not_canceled": {},
+                "message": error_msg,
+                "response": None
+            }
+        
+        client = ClobClient(
+            HOST,
+            key=PRIVATE_KEY,
+            chain_id=CHAIN_ID,
+            signature_type=1,  # 1 for email/Magic wallet, 2 for browser wallet
+            funder=FUNDER
+        )
+        
+        # Set API credentials (run in thread to avoid blocking)
+        api_creds = await asyncio.to_thread(client.create_or_derive_api_creds)
+        client.set_api_creds(api_creds)
+        
+        # Cancel the order (run in thread to avoid blocking)
+        resp = await asyncio.to_thread(client.cancel, order_id)
+        
+        logging.info(f"Order cancellation response: {resp}")
+        
+        # Extract response details
+        canceled = resp.get("canceled", []) if isinstance(resp, dict) else []
+        not_canceled = resp.get("not_canceled", {}) if isinstance(resp, dict) else {}
+        
+        # Determine success based on whether the order was canceled
+        success = len(canceled) > 0 or (len(not_canceled) == 0 and isinstance(resp, dict))
+        
+        return {
+            "success": success,
+            "canceled": canceled,
+            "not_canceled": not_canceled,
+            "message": "Order cancelled successfully" if success else "Failed to cancel order",
+            "response": resp
+        }
+        
+    except Exception as e:
+        error_msg = f"Error canceling order: {e}"
+        logging.error(error_msg)
+        return {
+            "success": False,
+            "canceled": [],
+            "not_canceled": {},
+            "message": error_msg,
+            "response": None
+        }
+
+
