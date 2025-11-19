@@ -24,7 +24,7 @@ async def run_agent():
     """
     app_name = "agents"
     user_id = "tester"
-    message_text = "Tell me about the current market status"
+    message_text = "Help me to manage my portfolio."
     session_id = str(uuid.uuid4())
     
     # Set a longer timeout for agent operations (default is 5 seconds)
