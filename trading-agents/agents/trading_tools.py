@@ -262,31 +262,3 @@ async def place_order_at_market_price(market_slug: str, outcome: str, side: str,
         }
 
 
-def get_cash_balance():
-    """ Get the cash balance of the user.
-    Returns:
-        float: The cash balance of the user in USDC.
-    """
-    # Initialize your client
-    HOST = "https://clob.polymarket.com"
-    CHAIN_ID = 137
-    PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY")
-    FUNDER = os.getenv("POLYMARKET_PROXY_ADDRESS")  # Your Polymarket proxy address
-
-    client = ClobClient(
-        HOST,
-        key=PRIVATE_KEY,
-        chain_id=CHAIN_ID,
-        signature_type=1,  # 1 for email/Magic wallet, 2 for Metamask
-        funder=FUNDER
-    )
-
-    client.set_api_creds(client.create_or_derive_api_creds())
-
-    # Get USDC balance
-    result = client.get_balance_allowance(
-        params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
-    )
-    # Convert balance to float, and divided by 10**6 to get the balance in USDC
-    balance = float(result['balance']) / 10**6
-    return balance
