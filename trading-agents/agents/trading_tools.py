@@ -5,7 +5,7 @@ import os
 import httpx
 
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import BalanceAllowanceParams, AssetType, OrderArgs, OrderType
+from py_clob_client.clob_types import OrderArgs, OrderType
 from py_clob_client.order_builder.constants import BUY, SELL
 
 
@@ -247,7 +247,7 @@ async def place_order(market_slug: str, outcome: str, side: str, price: float, s
             "message": "Limit order (GTC) placed successfully",
             "response": resp
         }
-        
+
     except Exception as e:
         error_msg = f"Error placing order: {e}"
         logging.error(error_msg)
