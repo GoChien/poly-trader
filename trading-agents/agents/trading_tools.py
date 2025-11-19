@@ -124,12 +124,17 @@ async def search_events_and_markets(search_query: str, page: int) -> list[dict]:
     return format_events(events)
 
 
-async def place_order_at_market_price(market_slug: str, outcome: str, side: str, size: int) -> dict:
-    """ Place an order on the Polymarket at the current market price.
+async def place_order(market_slug: str, outcome: str, side: str, price: float, size: int) -> dict:
+    """ Place a limit order on Polymarket with Good-Til-Cancelled (GTC) duration.
+    
+    This will place a limit order that remains active until it is filled or manually cancelled.
+    The order will only execute at the specified price or better.
+    
     Args:
         market_slug (str): The slug (i.e. the unique identifier) of the market you are trading on.
         outcome (str): The outcome you are trading (e.g., "YES" or "NO").
         side (str): The side of the order, either "BUY" or "SELL".
+        price (float): The limit price for your order (between 0.0 and 1.0). For BUY orders, the order will execute at this price or lower. For SELL orders, the order will execute at this price or higher.
         size (int): Quantity of shares you wish to trade.
     Returns:
         dict: A dictionary containing:
@@ -141,10 +146,10 @@ async def place_order_at_market_price(market_slug: str, outcome: str, side: str,
             - response (dict): Full response from the API if successful
     """
     logging.info(
-        f"place_order_at_market_price on market_slug: {market_slug}, outcome: {outcome}, side: {side}, size: {size}")
+        f"place_limit_order (GTC) on market_slug: {market_slug}, outcome: {outcome}, side: {side}, price: {price}, size: {size}")
     
     try:
-        # Step 1: Get market details to obtain token_id and current price
+        # Step 1: Get market details to obtain token_id
         base_url = f"https://gamma-api.polymarket.com/markets/slug/{market_slug}"
         
         async with httpx.AsyncClient(timeout=30.0) as http_client:
@@ -152,26 +157,20 @@ async def place_order_at_market_price(market_slug: str, outcome: str, side: str,
             response.raise_for_status()
             market_data = response.json()
         
-        # Parse market data to get token_id and current price
+        # Parse market data to get token_id
         outcomes = market_data.get("outcomes")
         if isinstance(outcomes, str):
             outcomes = json.loads(outcomes)
-        
-        outcome_prices = market_data.get("outcomePrices")
-        if isinstance(outcome_prices, str):
-            outcome_prices = json.loads(outcome_prices)
         
         token_ids = market_data.get("clobTokenIds")
         if isinstance(token_ids, str):
             token_ids = json.loads(token_ids)
         
-        # Find the token_id and price for the specified outcome
+        # Find the token_id for the specified outcome
         token_id = None
-        current_price = None
         for i, out in enumerate(outcomes):
             if out.upper() == outcome.upper():
                 token_id = token_ids[i]
-                current_price = float(outcome_prices[i])
                 break
         
         if not token_id:
@@ -186,7 +185,7 @@ async def place_order_at_market_price(market_slug: str, outcome: str, side: str,
                 "response": None
             }
         
-        logging.info(f"Found token_id: {token_id}, current price: {current_price}")
+        logging.info(f"Found token_id: {token_id}, placing limit order at price: {price}")
         
         # Step 2: Initialize ClobClient
         HOST = "https://clob.polymarket.com"
@@ -200,7 +199,7 @@ async def place_order_at_market_price(market_slug: str, outcome: str, side: str,
             return {
                 "success": False,
                 "order_id": None,
-                "price": current_price,
+                "price": price,
                 "size_requested": float(size),
                 "message": error_msg,
                 "response": None
@@ -221,9 +220,9 @@ async def place_order_at_market_price(market_slug: str, outcome: str, side: str,
         # Step 3: Convert side string to constant
         order_side = BUY if side.upper() == "BUY" else SELL
         
-        # Step 4: Create order arguments
+        # Step 4: Create limit order arguments with specified price
         order_args = OrderArgs(
-            price=current_price,
+            price=price,
             size=float(size),
             side=order_side,
             token_id=token_id,
@@ -235,7 +234,7 @@ async def place_order_at_market_price(market_slug: str, outcome: str, side: str,
         # Step 6: Post the order as GTC (Good-Till-Cancelled) (run in thread to avoid blocking)
         resp = await asyncio.to_thread(client.post_order, signed_order, OrderType.GTC)
         
-        logging.info(f"Order placed successfully: {resp}")
+        logging.info(f"Limit order (GTC) placed successfully: {resp}")
         
         # Extract order details from response
         order_id = resp.get("orderID") if isinstance(resp, dict) else None
@@ -243,9 +242,9 @@ async def place_order_at_market_price(market_slug: str, outcome: str, side: str,
         return {
             "success": True,
             "order_id": order_id,
-            "price": current_price,
+            "price": price,
             "size_requested": float(size),
-            "message": "Order placed successfully",
+            "message": "Limit order (GTC) placed successfully",
             "response": resp
         }
         
