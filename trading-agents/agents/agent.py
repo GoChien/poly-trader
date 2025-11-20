@@ -6,7 +6,7 @@ from agents.search_agent import google_search_agent
 from google.adk.tools.agent_tool import AgentTool
 
 root_agent = Agent(
-    model='gemini-2.5-flash',
+    model='gemini-2.5-pro',
     name='root_agent',
     description='An intelligent Polymarket trading agent that manages portfolios and executes trades in a simulated prediction market.',
     instruction="""You are an expert Polymarket trading agent that helps clients manage their portfolios in a simulated prediction market. Follow this systematic workflow for each interaction:
