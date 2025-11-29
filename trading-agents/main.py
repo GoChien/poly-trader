@@ -5,6 +5,10 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from google.adk.cli.fast_api import get_fast_api_app
+from google.adk.runners import Runner
+from google.adk.sessions.database_session_service import DatabaseSessionService
+from google.genai.types import Content, Part
+from agents.agent import root_agent
 
 # Get the directory where main.py is located
 AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -38,83 +42,70 @@ async def run_agent(request: Request):
     Returns:
         Response from the agent run endpoint
     """
-    # Automatically detect the server's URL from the incoming request
-    # This works in dev (port 8000), production (port from $PORT), or any configuration
-    agent_url = f"{request.url.scheme}://{request.url.netloc}"
-
     app_name = "agents"
     user_id = "tester"
     message_text = "Help me to manage my portfolio."
     session_id = str(uuid.uuid4())
 
-    # Set a longer timeout for agent operations (default is 5 seconds)
-    timeout = httpx.Timeout(
-        connect=10.0,  # Connection timeout
-        read=300.0,    # Read timeout (5 minutes for long-running agents)
-        write=10.0,    # Write timeout
-        pool=10.0      # Pool timeout
+    # Initialize Session Service
+    session_service = DatabaseSessionService(db_url=SESSION_SERVICE_URI)
+
+    # Initialize Runner
+    runner = Runner(
+        agent=root_agent,
+        session_service=session_service,
+        app_name=app_name
     )
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        # First: Create a session
-        session_url = f"{agent_url}/apps/{app_name}/users/{user_id}/sessions/{session_id}"
-        try:
-            session_response = await client.post(session_url)
-            session_response.raise_for_status()
-        except httpx.HTTPError as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to create session: {str(e)}"
-            )
+    # Create session
+    await session_service.create_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id
+    )
 
-        # Second: Send message to run endpoint
-        run_url = f"{agent_url}/run"
-        payload = {
-            "appName": app_name,
-            "userId": user_id,
-            "sessionId": session_id,
-            "newMessage": {
-                "role": "user",
-                "parts": [
-                    {
-                        "text": message_text
+    # Create Content object
+    user_content = Content(
+        role="user",
+        parts=[Part(text=message_text)]
+    )
+
+    try:
+        # Run the agent asynchronously
+        # We need to collect the response text from the events
+        response_text = ""
+        async for event in runner.run_async(
+            user_id=user_id,
+            session_id=session_id,
+            new_message=user_content
+        ):
+            # Check if the event has content and parts with text
+            if event.content and event.content.parts:
+                for part in event.content.parts:
+                    if part.text:
+                        response_text += part.text
+
+        return {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": response_text
+                            }
+                        ],
+                        "role": "model"
                     }
-                ]
-            }
+                }
+            ]
         }
 
-        try:
-            run_response = await client.post(
-                run_url,
-                json=payload,
-                headers={"Content-Type": "application/json"}
-            )
-            run_response.raise_for_status()
-
-            # Log response details for debugging
-            print(f"Run response status: {run_response.status_code}")
-            print(f"Run response headers: {run_response.headers}")
-            print(
-                f"Run response content-type: {run_response.headers.get('content-type', 'unknown')}")
-
-            # Try to parse JSON response
-            try:
-                return run_response.json()
-            except Exception as json_error:
-                print(f"Failed to parse JSON response: {json_error}")
-                # First 500 chars
-                print(f"Response text: {run_response.text[:500]}")
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to parse agent response: {str(json_error)}"
-                )
-
-        except httpx.HTTPError as e:
-            print(f"HTTP Error occurred: {type(e).__name__}: {str(e)}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to run agent: {type(e).__name__}: {str(e)}"
-            )
+    except Exception as e:
+        print(f"Error running agent: {type(e).__name__}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to run agent: {type(e).__name__}: {str(e)}"
+        )
 
 if __name__ == "__main__":
     # Use the PORT environment variable provided by Cloud Run, defaulting to 8080
