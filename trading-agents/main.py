@@ -2,18 +2,28 @@ import os
 import uuid
 
 import httpx
+from dotenv import load_dotenv
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.runners import Runner
-from google.adk.sessions.database_session_service import DatabaseSessionService
+from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.genai.types import Content, Part
 from agents.agent import root_agent
 
+# Load environment variables from .env file
+load_dotenv()
+
 # Get the directory where main.py is located
 AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
-# Example session service URI (e.g., SQLite)
-SESSION_SERVICE_URI = "sqlite:///./sessions.db"
+
+# Get GCP configuration from environment variables
+GCP_PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT")
+GCP_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION")
+REASONING_ENGINE_ID = os.getenv("REASONING_ENGINE_ID")
+
+# Use Vertex AI session service for persistent sessions.
+VERTEXAI_SESSION_SERVICE_URI = f"agentengine://projects/{GCP_PROJECT_ID}/locations/{GCP_LOCATION}/reasoningEngines/{REASONING_ENGINE_ID}"
 # Example allowed origins for CORS
 ALLOWED_ORIGINS = ["http://localhost", "http://localhost:8080", "*"]
 # Add CLIENT_URL from environment variable if set
@@ -26,7 +36,7 @@ SERVE_WEB_INTERFACE = True
 # Ensure the agent directory name ('capital_agent') matches your agent folder
 app: FastAPI = get_fast_api_app(
     agents_dir=AGENT_DIR,
-    session_service_uri=SESSION_SERVICE_URI,
+    session_service_uri=VERTEXAI_SESSION_SERVICE_URI,
     allow_origins=ALLOWED_ORIGINS,
     web=SERVE_WEB_INTERFACE,
 )
@@ -35,7 +45,7 @@ app: FastAPI = get_fast_api_app(
 # Additional endpoint: run_agent
 # This endpoint creates a session and sends a message to the agent with hard-coded values
 @app.post("/run_agent", include_in_schema=False)
-async def run_agent(request: Request):
+async def run_agent():
     """
     Creates a session and sends a message to the agent with hard-coded values.
     
@@ -45,10 +55,13 @@ async def run_agent(request: Request):
     app_name = "agents"
     user_id = "tester"
     message_text = "Help me to manage my portfolio."
-    session_id = str(uuid.uuid4())
 
-    # Initialize Session Service
-    session_service = DatabaseSessionService(db_url=SESSION_SERVICE_URI)
+    # Initialize Vertex AI Session Service
+    session_service = VertexAiSessionService(
+        GCP_PROJECT_ID,
+        GCP_LOCATION,
+        REASONING_ENGINE_ID
+    )
 
     # Initialize Runner
     runner = Runner(
@@ -58,10 +71,9 @@ async def run_agent(request: Request):
     )
 
     # Create session
-    await session_service.create_session(
+    session = await session_service.create_session(
         app_name=app_name,
         user_id=user_id,
-        session_id=session_id
     )
 
     # Create Content object
@@ -76,7 +88,7 @@ async def run_agent(request: Request):
         response_text = ""
         async for event in runner.run_async(
             user_id=user_id,
-            session_id=session_id,
+            session_id=session.id,
             new_message=user_content
         ):
             # Check if the event has content and parts with text

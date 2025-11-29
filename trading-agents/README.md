@@ -2,7 +2,11 @@
 
 The trading agents is built on `uv` and `google-adk`.
 
-## Setup
+## Permisions setup
+
+The ADK uses the Vertex AI session service to store the session state (created by https://docs.cloud.google.com/agent-builder/agent-engine/sessions/manage-sessions-adk#create-agent-engine). Therefore the CloudRun service needs at least `roles/aiplatform.user` to access the service. If running locally, your GCP account needs the same level of permission.
+
+## Dev/test setup
 
 Run the command:
 
