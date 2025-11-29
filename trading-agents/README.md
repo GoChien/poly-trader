@@ -15,7 +15,7 @@ cd ./trading-agents
 uv sync
 ```
 
-Then create a `/trading-agents/agents/.env` based on `/trading-agents/agents/.env.example` and populate required variables in it.
+Then create a `/trading-agents/.env` based on `/trading-agents/.env.example` and populate required variables in it.
 
 Then run
 
