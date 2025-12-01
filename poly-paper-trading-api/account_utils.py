@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 
 from fastapi import HTTPException
 from pydantic import BaseModel
@@ -14,6 +15,17 @@ class CreateAccountRequest(BaseModel):
 
 class CreateAccountResponse(BaseModel):
     account_id: uuid.UUID
+
+
+class SetBalanceRequest(BaseModel):
+    account_name: str
+    balance: Decimal
+
+
+class SetBalanceResponse(BaseModel):
+    account_id: uuid.UUID
+    account_name: str
+    balance: Decimal
 
 
 async def create_account_handler(
@@ -47,5 +59,43 @@ async def create_account_handler(
         await db.rollback()
         raise HTTPException(
             status_code=500, detail=f"Failed to create account: {str(e)}"
+        )
+
+
+async def set_balance_handler(
+    request: SetBalanceRequest, db: AsyncSession
+) -> SetBalanceResponse:
+    """Update the balance of an existing account."""
+    try:
+        # Find the account by name
+        stmt = select(Account).where(Account.account_name == request.account_name)
+        result = await db.execute(stmt)
+        account = result.scalar_one_or_none()
+        
+        if not account:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Account with name '{request.account_name}' not found"
+            )
+        
+        # Update the balance
+        account.balance = request.balance
+        await db.commit()
+        await db.refresh(account)
+        
+        return SetBalanceResponse(
+            account_id=account.account_id,
+            account_name=account.account_name,
+            balance=account.balance
+        )
+        
+    except HTTPException:
+        # Re-raise HTTPExceptions (like our 404 error)
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500, detail=f"Failed to set balance: {str(e)}"
         )
 

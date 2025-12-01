@@ -6,7 +6,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from account_utils import (
     CreateAccountRequest,
     CreateAccountResponse,
+    SetBalanceRequest,
+    SetBalanceResponse,
     create_account_handler,
+    set_balance_handler,
 )
 from database import close_db, get_db, init_db
 from models.account import Base
@@ -38,3 +41,11 @@ async def create_account(
 ) -> CreateAccountResponse:
     """Create a new account with the given name."""
     return await create_account_handler(request, db)
+
+
+@app.put("/accounts/balance", response_model=SetBalanceResponse)
+async def set_balance(
+    request: SetBalanceRequest, db: AsyncSession = Depends(get_db)
+) -> SetBalanceResponse:
+    """Update the balance of an existing account."""
+    return await set_balance_handler(request, db)
