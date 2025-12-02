@@ -30,6 +30,12 @@ class PlaceLimitOrderResponse(BaseModel):
     message: str
 
 
+class CancelOrderResponse(BaseModel):
+    order_id: uuid.UUID
+    status: str
+    message: str
+
+
 async def get_market_price(token_id: str, side: OrderSide) -> Decimal:
     """
     Get the current market price for a token from Polymarket CLOB API.
@@ -268,4 +274,51 @@ async def _get_or_create_position(
         db.add(position)
     
     return position
+
+
+async def cancel_order_handler(
+    order_id: uuid.UUID, db: AsyncSession
+) -> CancelOrderResponse:
+    """
+    Cancel an open order.
+    
+    Only orders with status OPEN can be cancelled.
+    """
+    try:
+        # Get the order
+        stmt = select(Order).where(Order.order_id == order_id)
+        result = await db.execute(stmt)
+        order = result.scalar_one_or_none()
+        
+        if not order:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Order with id '{order_id}' not found"
+            )
+        
+        # Check if order can be cancelled
+        if order.status != OrderStatus.OPEN:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot cancel order. Current status is '{order.status.value}', only OPEN orders can be cancelled"
+            )
+        
+        # Update order status to CANCELLED
+        order.status = OrderStatus.CANCELLED
+        await db.commit()
+        
+        return CancelOrderResponse(
+            order_id=order_id,
+            status="cancelled",
+            message="Order successfully cancelled"
+        )
+        
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500, detail=f"Failed to cancel order: {str(e)}"
+        )
 

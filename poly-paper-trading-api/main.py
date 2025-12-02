@@ -1,3 +1,4 @@
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
@@ -19,8 +20,10 @@ from models.order import Order  # noqa: F401
 from models.position import Position  # noqa: F401
 from models.transaction import Transaction  # noqa: F401
 from order_utils import (
+    CancelOrderResponse,
     PlaceLimitOrderRequest,
     PlaceLimitOrderResponse,
+    cancel_order_handler,
     place_limit_order_handler,
 )
 
@@ -87,3 +90,15 @@ async def place_limit_order(
     - Otherwise, creates an open order
     """
     return await place_limit_order_handler(request, db)
+
+
+@app.post("/orders/{order_id}/cancel", response_model=CancelOrderResponse)
+async def cancel_order(
+    order_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+) -> CancelOrderResponse:
+    """
+    Cancel an open order.
+    
+    Only orders with status OPEN can be cancelled.
+    """
+    return await cancel_order_handler(order_id, db)
