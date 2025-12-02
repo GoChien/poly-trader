@@ -15,6 +15,14 @@ from account_utils import (
 )
 from database import close_db, get_db, init_db
 from models.account import Base
+from models.order import Order  # noqa: F401
+from models.position import Position  # noqa: F401
+from models.transaction import Transaction  # noqa: F401
+from order_utils import (
+    PlaceLimitOrderRequest,
+    PlaceLimitOrderResponse,
+    place_limit_order_handler,
+)
 
 
 @asynccontextmanager
@@ -59,3 +67,23 @@ async def set_balance(
 ) -> SetBalanceResponse:
     """Update the balance of an existing account."""
     return await set_balance_handler(request, db)
+
+
+@app.post("/orders/limit", response_model=PlaceLimitOrderResponse)
+async def place_limit_order(
+    request: PlaceLimitOrderRequest, db: AsyncSession = Depends(get_db)
+) -> PlaceLimitOrderResponse:
+    """
+    Place a limit order.
+    
+    For BUY orders:
+    - Checks if there's sufficient balance
+    - If limit price >= market price, fills immediately at market price
+    - Otherwise, creates an open order
+    
+    For SELL orders:
+    - Checks if there's sufficient shares in positions
+    - If limit price <= market price, fills immediately at market price
+    - Otherwise, creates an open order
+    """
+    return await place_limit_order_handler(request, db)
