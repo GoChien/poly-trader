@@ -28,6 +28,12 @@ class SetBalanceResponse(BaseModel):
     balance: Decimal
 
 
+class GetBalanceResponse(BaseModel):
+    account_id: uuid.UUID
+    account_name: str
+    balance: Decimal
+
+
 async def create_account_handler(
     request: CreateAccountRequest, db: AsyncSession
 ) -> CreateAccountResponse:
@@ -97,5 +103,36 @@ async def set_balance_handler(
         await db.rollback()
         raise HTTPException(
             status_code=500, detail=f"Failed to set balance: {str(e)}"
+        )
+
+
+async def get_balance_handler(
+    account_name: str, db: AsyncSession
+) -> GetBalanceResponse:
+    """Get the balance of an existing account."""
+    try:
+        # Find the account by name
+        stmt = select(Account).where(Account.account_name == account_name)
+        result = await db.execute(stmt)
+        account = result.scalar_one_or_none()
+        
+        if not account:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Account with name '{account_name}' not found"
+            )
+        
+        return GetBalanceResponse(
+            account_id=account.account_id,
+            account_name=account.account_name,
+            balance=account.balance
+        )
+        
+    except HTTPException:
+        # Re-raise HTTPExceptions (like our 404 error)
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get balance: {str(e)}"
         )
 
