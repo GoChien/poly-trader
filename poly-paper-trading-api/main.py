@@ -21,9 +21,11 @@ from models.position import Position  # noqa: F401
 from models.transaction import Transaction  # noqa: F401
 from order_utils import (
     CancelOrderResponse,
+    GetOpenOrdersResponse,
     PlaceLimitOrderRequest,
     PlaceLimitOrderResponse,
     cancel_order_handler,
+    get_open_orders_handler,
     place_limit_order_handler,
 )
 
@@ -102,3 +104,13 @@ async def cancel_order(
     Only orders with status OPEN can be cancelled.
     """
     return await cancel_order_handler(order_id, db)
+
+
+@app.get("/orders/open", response_model=GetOpenOrdersResponse)
+async def get_open_orders(
+    account_name: str, db: AsyncSession = Depends(get_db)
+) -> GetOpenOrdersResponse:
+    """
+    Get all open orders for an account.
+    """
+    return await get_open_orders_handler(account_name, db)

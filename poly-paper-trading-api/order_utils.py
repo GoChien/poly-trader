@@ -36,6 +36,21 @@ class CancelOrderResponse(BaseModel):
     message: str
 
 
+class OrderResponse(BaseModel):
+    order_id: uuid.UUID
+    account_id: uuid.UUID
+    price: Decimal
+    size: int
+    side: OrderSide
+    token_id: str
+    status: OrderStatus
+
+
+class GetOpenOrdersResponse(BaseModel):
+    account_name: str
+    orders: list[OrderResponse]
+
+
 async def get_market_price(token_id: str, side: OrderSide) -> Decimal:
     """
     Get the current market price for a token from Polymarket CLOB API.
@@ -321,4 +336,46 @@ async def cancel_order_handler(
         raise HTTPException(
             status_code=500, detail=f"Failed to cancel order: {str(e)}"
         )
+
+
+async def get_open_orders_handler(
+    account_name: str, db: AsyncSession
+) -> GetOpenOrdersResponse:
+    """
+    Get all open orders for an account.
+    """
+    # Get the account by name
+    stmt = select(Account).where(Account.account_name == account_name)
+    result = await db.execute(stmt)
+    account = result.scalar_one_or_none()
+
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Account with name '{account_name}' not found"
+        )
+
+    # Get all open orders for this account
+    stmt = select(Order).where(
+        Order.account_id == account.account_id,
+        Order.status == OrderStatus.OPEN,
+    )
+    result = await db.execute(stmt)
+    orders = result.scalars().all()
+
+    return GetOpenOrdersResponse(
+        account_name=account_name,
+        orders=[
+            OrderResponse(
+                order_id=order.order_id,
+                account_id=order.account_id,
+                price=order.price,
+                size=order.size,
+                side=order.side,
+                token_id=order.token_id,
+                status=order.status,
+            )
+            for order in orders
+        ],
+    )
 
