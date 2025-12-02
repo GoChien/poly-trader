@@ -172,7 +172,10 @@ async def _handle_buy_order(
             message=f"Order filled immediately at market price {market_price}"
         )
     else:
-        # Create open order (funds will be reserved when order is filled)
+        # Reserve funds by deducting from account balance
+        account.balance -= order_cost
+        
+        # Create open order
         order = Order(
             account_id=request.account_id,
             price=request.price,
@@ -188,7 +191,7 @@ async def _handle_buy_order(
         return PlaceLimitOrderResponse(
             order_id=order.order_id,
             status="open",
-            message=f"Limit order created. Limit price {request.price} < market price {market_price}"
+            message=f"Limit order created. {order_cost} reserved. Limit price {request.price} < market price {market_price}"
         )
 
 
@@ -248,6 +251,9 @@ async def _handle_sell_order(
             message=f"Order filled immediately at market price {market_price}"
         )
     else:
+        # Reserve shares by deducting from position
+        position.shares -= request.size
+        
         # Create open order
         order = Order(
             account_id=request.account_id,
@@ -264,7 +270,7 @@ async def _handle_sell_order(
         return PlaceLimitOrderResponse(
             order_id=order.order_id,
             status="open",
-            message=f"Limit order created. Limit price {request.price} > market price {market_price}"
+            message=f"Limit order created. {request.size} shares reserved. Limit price {request.price} > market price {market_price}"
         )
 
 
@@ -317,6 +323,28 @@ async def cancel_order_handler(
                 status_code=400,
                 detail=f"Cannot cancel order. Current status is '{order.status.value}', only OPEN orders can be cancelled"
             )
+        
+        # If BUY order, refund reserved funds
+        if order.side == OrderSide.BUY:
+            stmt = select(Account).where(Account.account_id == order.account_id)
+            result = await db.execute(stmt)
+            account = result.scalar_one_or_none()
+            
+            if account:
+                reserved_amount = order.price * order.size
+                account.balance += reserved_amount
+        
+        # If SELL order, refund reserved shares
+        elif order.side == OrderSide.SELL:
+            stmt = select(Position).where(
+                Position.account_id == order.account_id,
+                Position.token_id == order.token_id,
+            )
+            result = await db.execute(stmt)
+            position = result.scalar_one_or_none()
+            
+            if position:
+                position.shares += order.size
         
         # Update order status to CANCELLED
         order.status = OrderStatus.CANCELLED
