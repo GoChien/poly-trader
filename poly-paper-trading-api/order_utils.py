@@ -58,7 +58,9 @@ async def get_market_price(token_id: str, side: OrderSide) -> Decimal:
     For BUY orders, we need the ASK price (what sellers are asking).
     For SELL orders, we need the BID price (what buyers are bidding).
     """
-    api_side = "BUY" if side == OrderSide.BUY else "SELL"
+    # To get asks (for buying), specify side as SELL
+    # To get bids (for selling), specify side as BUY
+    api_side = "SELL" if side == OrderSide.BUY else "BUY"
     
     async with httpx.AsyncClient() as client:
         response = await client.get(

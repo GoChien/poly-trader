@@ -62,7 +62,7 @@ class GetPositionsResponse(BaseModel):
 async def get_market_price_for_token(token_id: str) -> Decimal | None:
     """
     Get the current market price for a token using the Polymarket CLOB API.
-    Uses SELL side to get the price we could sell at (bid price).
+    Uses BUY side to get the price we could sell at (bid price).
     
     See: https://docs.polymarket.com/api-reference/pricing/get-market-price
     """
@@ -70,7 +70,7 @@ async def get_market_price_for_token(token_id: str) -> Decimal | None:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
                 f"{POLYMARKET_CLOB_URL}/price",
-                params={"token_id": token_id, "side": "SELL"},
+                params={"token_id": token_id, "side": "BUY"},
             )
             if response.status_code == 200:
                 data = response.json()
