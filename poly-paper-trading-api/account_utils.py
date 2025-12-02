@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.account import Account
+from models.position import Position
 
 
 class CreateAccountRequest(BaseModel):
@@ -32,6 +33,17 @@ class GetBalanceResponse(BaseModel):
     account_id: uuid.UUID
     account_name: str
     balance: Decimal
+
+
+class PositionResponse(BaseModel):
+    token_id: str
+    shares: int
+    total_cost: Decimal
+
+
+class GetPositionsResponse(BaseModel):
+    account_name: str
+    positions: list[PositionResponse]
 
 
 async def create_account_handler(
@@ -135,4 +147,37 @@ async def get_balance_handler(
         raise HTTPException(
             status_code=500, detail=f"Failed to get balance: {str(e)}"
         )
+
+
+async def get_positions_handler(
+    account_name: str, db: AsyncSession
+) -> GetPositionsResponse:
+    """Get all positions held by an account."""
+    # Find the account by name
+    stmt = select(Account).where(Account.account_name == account_name)
+    result = await db.execute(stmt)
+    account = result.scalar_one_or_none()
+
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Account with name '{account_name}' not found"
+        )
+
+    # Get all positions for this account
+    stmt = select(Position).where(Position.account_id == account.account_id)
+    result = await db.execute(stmt)
+    positions = result.scalars().all()
+
+    return GetPositionsResponse(
+        account_name=account_name,
+        positions=[
+            PositionResponse(
+                token_id=position.token_id,
+                shares=position.shares,
+                total_cost=position.total_cost,
+            )
+            for position in positions
+        ],
+    )
 

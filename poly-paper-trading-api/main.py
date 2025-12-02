@@ -8,10 +8,12 @@ from account_utils import (
     CreateAccountRequest,
     CreateAccountResponse,
     GetBalanceResponse,
+    GetPositionsResponse,
     SetBalanceRequest,
     SetBalanceResponse,
     create_account_handler,
     get_balance_handler,
+    get_positions_handler,
     set_balance_handler,
 )
 from database import close_db, get_db, init_db
@@ -72,6 +74,14 @@ async def set_balance(
 ) -> SetBalanceResponse:
     """Update the balance of an existing account."""
     return await set_balance_handler(request, db)
+
+
+@app.get("/accounts/positions", response_model=GetPositionsResponse)
+async def get_positions(
+    account_name: str, db: AsyncSession = Depends(get_db)
+) -> GetPositionsResponse:
+    """Get all positions held by an account."""
+    return await get_positions_handler(account_name, db)
 
 
 @app.post("/orders/limit", response_model=PlaceLimitOrderResponse)
