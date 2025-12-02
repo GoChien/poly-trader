@@ -11,8 +11,8 @@ from models.account import Base
 
 
 class OrderSide(str, enum.Enum):
-    BUY = "Buy"
-    SELL = "Sell"
+    BUY = "BUY"
+    SELL = "SELL"
 
 
 class OrderStatus(str, enum.Enum):
