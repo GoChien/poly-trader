@@ -1,5 +1,6 @@
 import json
 import uuid
+from datetime import datetime
 from decimal import Decimal
 
 import httpx
@@ -64,6 +65,19 @@ class UpdateAccountValueResponse(BaseModel):
     account_id: uuid.UUID
     account_name: str
     total_value: Decimal
+
+
+class AccountValueRecord(BaseModel):
+    timestamp: datetime
+    total_value: Decimal
+
+
+class GetAccountValueHistoryResponse(BaseModel):
+    account_id: uuid.UUID
+    account_name: str
+    start_time: datetime
+    end_time: datetime
+    values: list[AccountValueRecord]
 
 
 async def get_market_price_for_token(token_id: str) -> Decimal | None:
@@ -425,5 +439,62 @@ async def update_account_value_handler(
         await db.rollback()
         raise HTTPException(
             status_code=500, detail=f"Failed to update account value: {str(e)}"
+        )
+
+
+async def get_account_value_history_handler(
+    account_name: str,
+    start_time: datetime,
+    end_time: datetime,
+    db: AsyncSession,
+) -> GetAccountValueHistoryResponse:
+    """Get account value history between start_time and end_time."""
+    try:
+        # Find the account by name
+        stmt = select(Account).where(Account.account_name == account_name)
+        result = await db.execute(stmt)
+        account = result.scalar_one_or_none()
+
+        if not account:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Account with name '{account_name}' not found"
+            )
+
+        # Query account values within the time range
+        stmt = (
+            select(AccountValue)
+            .where(
+                AccountValue.account_id == account.account_id,
+                AccountValue.timestamp >= start_time,
+                AccountValue.timestamp <= end_time,
+            )
+            .order_by(AccountValue.timestamp)
+        )
+        result = await db.execute(stmt)
+        account_values = result.scalars().all()
+
+        # Convert to response format
+        values = [
+            AccountValueRecord(
+                timestamp=av.timestamp,
+                total_value=av.total_value,
+            )
+            for av in account_values
+        ]
+
+        return GetAccountValueHistoryResponse(
+            account_id=account.account_id,
+            account_name=account.account_name,
+            start_time=start_time,
+            end_time=end_time,
+            values=values,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get account value history: {str(e)}"
         )
 

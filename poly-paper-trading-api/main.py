@@ -1,5 +1,6 @@
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,12 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from account_utils import (
     CreateAccountRequest,
     CreateAccountResponse,
+    GetAccountValueHistoryResponse,
     GetBalanceResponse,
     GetPositionsResponse,
     SetBalanceRequest,
     SetBalanceResponse,
     UpdateAccountValueResponse,
     create_account_handler,
+    get_account_value_history_handler,
     get_balance_handler,
     get_positions_handler,
     set_balance_handler,
@@ -158,3 +161,20 @@ async def update_account_value(
     - Inserts a new record in the account_values table
     """
     return await update_account_value_handler(account_id, db)
+
+
+@app.get("/accounts/value/history", response_model=GetAccountValueHistoryResponse)
+async def get_account_value_history(
+    account_name: str,
+    start_time: datetime,
+    end_time: datetime,
+    db: AsyncSession = Depends(get_db),
+) -> GetAccountValueHistoryResponse:
+    """
+    Get account value history between start_time and end_time.
+    
+    Returns all recorded account values within the specified time range,
+    ordered by timestamp ascending.
+    """
+    return await get_account_value_history_handler(account_name, start_time, end_time, db)
+
