@@ -4,7 +4,11 @@ import logging
 import os
 import httpx
 
+from dotenv import load_dotenv
 from py_clob_client.client import ClobClient
+
+# Load environment variables from .env file
+load_dotenv()
 from py_clob_client.clob_types import OrderArgs, OrderType
 from py_clob_client.order_builder.constants import BUY, SELL
 
@@ -187,66 +191,119 @@ async def place_order(market_slug: str, outcome: str, side: str, price: float, s
         
         logging.info(f"Found token_id: {token_id}, placing limit order at price: {price}")
         
-        # Step 2: Initialize ClobClient
-        HOST = "https://clob.polymarket.com"
-        CHAIN_ID = 137
-        PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY")
-        FUNDER = os.getenv("POLYMARKET_PROXY_ADDRESS")
+        # Check if we should use poly-paper API
+        use_poly_paper = os.getenv("USE_POLY_PAPER", "0") == "1"
         
-        if not PRIVATE_KEY or not FUNDER:
-            error_msg = "POLYMARKET_PRIVATE_KEY or POLYMARKET_PROXY_ADDRESS not set in environment"
-            logging.error(error_msg)
+        if use_poly_paper:
+            # Use poly-paper-trading-api
+            poly_paper_url = os.getenv("POLY_PAPER_URL")
+            poly_paper_account_id = os.getenv("POLY_PAPER_ACCOUNT_ID")
+            
+            if not poly_paper_url or not poly_paper_account_id:
+                error_msg = "POLY_PAPER_URL or POLY_PAPER_ACCOUNT_ID not set in environment"
+                logging.error(error_msg)
+                return {
+                    "success": False,
+                    "order_id": None,
+                    "price": price,
+                    "size_requested": float(size),
+                    "message": error_msg,
+                    "response": None
+                }
+            
+            # Prepare request payload for poly-paper API
+            payload = {
+                "account_id": poly_paper_account_id,
+                "price": price,
+                "size": size,
+                "side": side.upper(),
+                "token_id": token_id,
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                response = await http_client.post(
+                    f"{poly_paper_url.rstrip('/')}/orders/limit",
+                    json=payload,
+                )
+                response.raise_for_status()
+                resp = response.json()
+            
+            logging.info(f"Poly-paper limit order placed: {resp}")
+            
+            order_id = resp.get("order_id")
+            transaction_id = resp.get("transaction_id")
+            status = resp.get("status")
+            message = resp.get("message", "Order placed via poly-paper API")
+            
             return {
-                "success": False,
-                "order_id": None,
+                "success": True,
+                "order_id": order_id or transaction_id,
                 "price": price,
                 "size_requested": float(size),
-                "message": error_msg,
-                "response": None
+                "message": f"[Paper Trading] {message}",
+                "response": resp
             }
-        
-        client = ClobClient(
-            HOST,
-            key=PRIVATE_KEY,
-            chain_id=CHAIN_ID,
-            signature_type=1,  # 1 for email/Magic wallet, 2 for browser wallet
-            funder=FUNDER
-        )
-        
-        # Set API credentials (run in thread to avoid blocking)
-        api_creds = await asyncio.to_thread(client.create_or_derive_api_creds)
-        client.set_api_creds(api_creds)
-        
-        # Step 3: Convert side string to constant
-        order_side = BUY if side.upper() == "BUY" else SELL
-        
-        # Step 4: Create limit order arguments with specified price
-        order_args = OrderArgs(
-            price=price,
-            size=float(size),
-            side=order_side,
-            token_id=token_id,
-        )
-        
-        # Step 5: Sign the order (run in thread to avoid blocking)
-        signed_order = await asyncio.to_thread(client.create_order, order_args)
-        
-        # Step 6: Post the order as GTC (Good-Till-Cancelled) (run in thread to avoid blocking)
-        resp = await asyncio.to_thread(client.post_order, signed_order, OrderType.GTC)
-        
-        logging.info(f"Limit order (GTC) placed successfully: {resp}")
-        
-        # Extract order details from response
-        order_id = resp.get("orderID") if isinstance(resp, dict) else None
-        
-        return {
-            "success": True,
-            "order_id": order_id,
-            "price": price,
-            "size_requested": float(size),
-            "message": "Limit order (GTC) placed successfully",
-            "response": resp
-        }
+        else:
+            # Use original ClobClient
+            HOST = "https://clob.polymarket.com"
+            CHAIN_ID = 137
+            PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY")
+            FUNDER = os.getenv("POLYMARKET_PROXY_ADDRESS")
+            
+            if not PRIVATE_KEY or not FUNDER:
+                error_msg = "POLYMARKET_PRIVATE_KEY or POLYMARKET_PROXY_ADDRESS not set in environment"
+                logging.error(error_msg)
+                return {
+                    "success": False,
+                    "order_id": None,
+                    "price": price,
+                    "size_requested": float(size),
+                    "message": error_msg,
+                    "response": None
+                }
+            
+            client = ClobClient(
+                HOST,
+                key=PRIVATE_KEY,
+                chain_id=CHAIN_ID,
+                signature_type=1,  # 1 for email/Magic wallet, 2 for browser wallet
+                funder=FUNDER
+            )
+            
+            # Set API credentials (run in thread to avoid blocking)
+            api_creds = await asyncio.to_thread(client.create_or_derive_api_creds)
+            client.set_api_creds(api_creds)
+            
+            # Convert side string to constant
+            order_side = BUY if side.upper() == "BUY" else SELL
+            
+            # Create limit order arguments with specified price
+            order_args = OrderArgs(
+                price=price,
+                size=float(size),
+                side=order_side,
+                token_id=token_id,
+            )
+            
+            # Sign the order (run in thread to avoid blocking)
+            signed_order = await asyncio.to_thread(client.create_order, order_args)
+            
+            # Post the order as GTC (Good-Till-Cancelled) (run in thread to avoid blocking)
+            resp = await asyncio.to_thread(client.post_order, signed_order, OrderType.GTC)
+            
+            logging.info(f"Limit order (GTC) placed successfully: {resp}")
+            
+            # Extract order details from response
+            order_id = resp.get("orderID") if isinstance(resp, dict) else None
+            
+            return {
+                "success": True,
+                "order_id": order_id,
+                "price": price,
+                "size_requested": float(size),
+                "message": "Limit order (GTC) placed successfully",
+                "response": resp
+            }
 
     except Exception as e:
         error_msg = f"Error placing order: {e}"
@@ -277,54 +334,93 @@ async def cancel_order(order_id: str) -> dict:
     logging.info(f"Canceling order: {order_id}")
     
     try:
-        # Initialize ClobClient
-        HOST = "https://clob.polymarket.com"
-        CHAIN_ID = 137
-        PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY")
-        FUNDER = os.getenv("POLYMARKET_PROXY_ADDRESS")
+        # Check if we should use poly-paper API
+        use_poly_paper = os.getenv("USE_POLY_PAPER", "0") == "1"
         
-        if not PRIVATE_KEY or not FUNDER:
-            error_msg = "POLYMARKET_PRIVATE_KEY or POLYMARKET_PROXY_ADDRESS not set in environment"
-            logging.error(error_msg)
+        if use_poly_paper:
+            # Use poly-paper-trading-api
+            poly_paper_url = os.getenv("POLY_PAPER_URL")
+            
+            if not poly_paper_url:
+                error_msg = "POLY_PAPER_URL not set in environment"
+                logging.error(error_msg)
+                return {
+                    "success": False,
+                    "canceled": [],
+                    "not_canceled": {},
+                    "message": error_msg,
+                    "response": None
+                }
+            
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                response = await http_client.post(
+                    f"{poly_paper_url.rstrip('/')}/orders/{order_id}/cancel",
+                )
+                response.raise_for_status()
+                resp = response.json()
+            
+            logging.info(f"Poly-paper order cancellation response: {resp}")
+            
+            status = resp.get("status")
+            message = resp.get("message", "Order cancelled via poly-paper API")
+            success = status == "cancelled"
+            
             return {
-                "success": False,
-                "canceled": [],
-                "not_canceled": {},
-                "message": error_msg,
-                "response": None
+                "success": success,
+                "canceled": [order_id] if success else [],
+                "not_canceled": {} if success else {order_id: message},
+                "message": f"[Paper Trading] {message}",
+                "response": resp
             }
-        
-        client = ClobClient(
-            HOST,
-            key=PRIVATE_KEY,
-            chain_id=CHAIN_ID,
-            signature_type=1,  # 1 for email/Magic wallet, 2 for browser wallet
-            funder=FUNDER
-        )
-        
-        # Set API credentials (run in thread to avoid blocking)
-        api_creds = await asyncio.to_thread(client.create_or_derive_api_creds)
-        client.set_api_creds(api_creds)
-        
-        # Cancel the order (run in thread to avoid blocking)
-        resp = await asyncio.to_thread(client.cancel, order_id)
-        
-        logging.info(f"Order cancellation response: {resp}")
-        
-        # Extract response details
-        canceled = resp.get("canceled", []) if isinstance(resp, dict) else []
-        not_canceled = resp.get("not_canceled", {}) if isinstance(resp, dict) else {}
-        
-        # Determine success based on whether the order was canceled
-        success = len(canceled) > 0 or (len(not_canceled) == 0 and isinstance(resp, dict))
-        
-        return {
-            "success": success,
-            "canceled": canceled,
-            "not_canceled": not_canceled,
-            "message": "Order cancelled successfully" if success else "Failed to cancel order",
-            "response": resp
-        }
+        else:
+            # Use original ClobClient
+            HOST = "https://clob.polymarket.com"
+            CHAIN_ID = 137
+            PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY")
+            FUNDER = os.getenv("POLYMARKET_PROXY_ADDRESS")
+            
+            if not PRIVATE_KEY or not FUNDER:
+                error_msg = "POLYMARKET_PRIVATE_KEY or POLYMARKET_PROXY_ADDRESS not set in environment"
+                logging.error(error_msg)
+                return {
+                    "success": False,
+                    "canceled": [],
+                    "not_canceled": {},
+                    "message": error_msg,
+                    "response": None
+                }
+            
+            client = ClobClient(
+                HOST,
+                key=PRIVATE_KEY,
+                chain_id=CHAIN_ID,
+                signature_type=1,  # 1 for email/Magic wallet, 2 for browser wallet
+                funder=FUNDER
+            )
+            
+            # Set API credentials (run in thread to avoid blocking)
+            api_creds = await asyncio.to_thread(client.create_or_derive_api_creds)
+            client.set_api_creds(api_creds)
+            
+            # Cancel the order (run in thread to avoid blocking)
+            resp = await asyncio.to_thread(client.cancel, order_id)
+            
+            logging.info(f"Order cancellation response: {resp}")
+            
+            # Extract response details
+            canceled = resp.get("canceled", []) if isinstance(resp, dict) else []
+            not_canceled = resp.get("not_canceled", {}) if isinstance(resp, dict) else {}
+            
+            # Determine success based on whether the order was canceled
+            success = len(canceled) > 0 or (len(not_canceled) == 0 and isinstance(resp, dict))
+            
+            return {
+                "success": success,
+                "canceled": canceled,
+                "not_canceled": not_canceled,
+                "message": "Order cancelled successfully" if success else "Failed to cancel order",
+                "response": resp
+            }
         
     except Exception as e:
         error_msg = f"Error canceling order: {e}"

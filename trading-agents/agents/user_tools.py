@@ -1,7 +1,11 @@
 import os
 import httpx
 
+from dotenv import load_dotenv
 from py_clob_client.client import ClobClient
+
+# Load environment variables from .env file
+load_dotenv()
 from py_clob_client.clob_types import BalanceAllowanceParams, AssetType, OpenOrderParams
 from py_clob_client.order_builder.constants import BUY, SELL
 
@@ -10,29 +14,50 @@ def get_cash_balance():
     Returns:
         float: The cash balance of the user in USDC.
     """
-    # Initialize your client
-    HOST = "https://clob.polymarket.com"
-    CHAIN_ID = 137
-    PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY")
-    FUNDER = os.getenv("POLYMARKET_PROXY_ADDRESS")  # Your Polymarket proxy address
+    # Check if we should use poly-paper API
+    use_poly_paper = os.getenv("USE_POLY_PAPER", "0") == "1"
+    
+    if use_poly_paper:
+        # Use poly-paper-trading-api
+        poly_paper_url = os.getenv("POLY_PAPER_URL")
+        poly_paper_account_name = os.getenv("POLY_PAPER_ACCOUNT_NAME")
+        
+        if not poly_paper_url or not poly_paper_account_name:
+            raise ValueError("POLY_PAPER_URL or POLY_PAPER_ACCOUNT_NAME not set in environment")
+        
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(
+                f"{poly_paper_url.rstrip('/')}/accounts/balance",
+                params={"account_name": poly_paper_account_name},
+            )
+            response.raise_for_status()
+            data = response.json()
+        
+        return float(data["balance"])
+    else:
+        # Use original ClobClient
+        HOST = "https://clob.polymarket.com"
+        CHAIN_ID = 137
+        PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY")
+        FUNDER = os.getenv("POLYMARKET_PROXY_ADDRESS")  # Your Polymarket proxy address
 
-    client = ClobClient(
-        HOST,
-        key=PRIVATE_KEY,
-        chain_id=CHAIN_ID,
-        signature_type=1,  # 1 for email/Magic wallet, 2 for Metamask
-        funder=FUNDER
-    )
+        client = ClobClient(
+            HOST,
+            key=PRIVATE_KEY,
+            chain_id=CHAIN_ID,
+            signature_type=1,  # 1 for email/Magic wallet, 2 for Metamask
+            funder=FUNDER
+        )
 
-    client.set_api_creds(client.create_or_derive_api_creds())
+        client.set_api_creds(client.create_or_derive_api_creds())
 
-    # Get USDC balance
-    result = client.get_balance_allowance(
-        params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
-    )
-    # Convert balance to float, and divided by 10**6 to get the balance in USDC
-    balance = float(result['balance']) / 10**6
-    return balance
+        # Get USDC balance
+        result = client.get_balance_allowance(
+            params=BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        )
+        # Convert balance to float, and divided by 10**6 to get the balance in USDC
+        balance = float(result['balance']) / 10**6
+        return balance
 
 
 async def get_user_positions(
@@ -64,50 +89,89 @@ async def get_user_positions(
             - slug: Market slug for trading
             - event_slug: Event slug for reference
     """
-    user_address = os.getenv("POLYMARKET_PROXY_ADDRESS")
+    # Check if we should use poly-paper API
+    use_poly_paper = os.getenv("USE_POLY_PAPER", "0") == "1"
     
-    if not user_address:
-        raise ValueError("POLYMARKET_PROXY_ADDRESS not set in environment")
-    
-    base_url = "https://data-api.polymarket.com/positions"
-    
-    params = {
-        "user": user_address,
-        "limit": min(limit, 500),  # Cap at API maximum
-        "sortBy": sort_by,
-        "sortDirection": sort_direction,
-    }
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(base_url, params=params)
-        response.raise_for_status()
-        positions = response.json()
-    
-    # Format positions for LLM consumption
-    formatted_positions = []
-    for pos in positions:
-        formatted_pos = {
-            "title": pos.get("title", "Unknown"),
-            "outcome": pos.get("outcome", "Unknown"),
-            "size": pos.get("size", 0),
-            "avg_price": pos.get("avgPrice", 0),
-            "current_price": pos.get("curPrice", 0),
-            "initial_value": pos.get("initialValue", 0),
-            "current_value": pos.get("currentValue", 0),
-            "cash_pnl": pos.get("cashPnl", 0),
-            "percent_pnl": pos.get("percentPnl", 0),
-            "realized_pnl": pos.get("realizedPnl", 0),
-            "percent_realized_pnl": pos.get("percentRealizedPnl", 0),
-            "total_bought": pos.get("totalBought", 0),
-            "end_date": pos.get("endDate", "Unknown"),
-            "slug": pos.get("slug", ""),
-            "event_slug": pos.get("eventSlug", ""),
-            "redeemable": pos.get("redeemable", False),
-            "mergeable": pos.get("mergeable", False),
+    if use_poly_paper:
+        # Use poly-paper-trading-api
+        poly_paper_url = os.getenv("POLY_PAPER_URL")
+        poly_paper_account_name = os.getenv("POLY_PAPER_ACCOUNT_NAME")
+        
+        if not poly_paper_url or not poly_paper_account_name:
+            raise ValueError("POLY_PAPER_URL or POLY_PAPER_ACCOUNT_NAME not set in environment")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{poly_paper_url.rstrip('/')}/accounts/positions",
+                params={"account_name": poly_paper_account_name},
+            )
+            response.raise_for_status()
+            data = response.json()
+        
+        # Format positions from poly-paper API response
+        formatted_positions = []
+        for pos in data.get("positions", []):
+            formatted_pos = {
+                "title": pos.get("title", "Unknown"),
+                "outcome": pos.get("outcome", "Unknown"),
+                "size": pos.get("shares", 0),
+                "avg_price": float(pos.get("avg_price", 0)) if pos.get("avg_price") else 0,
+                "current_price": float(pos.get("current_price", 0)) if pos.get("current_price") else 0,
+                "initial_value": float(pos.get("total_cost", 0)) if pos.get("total_cost") else 0,
+                "current_value": float(pos.get("current_value", 0)) if pos.get("current_value") else 0,
+                "cash_pnl": float(pos.get("cash_pnl", 0)) if pos.get("cash_pnl") else 0,
+                "percent_pnl": float(pos.get("percent_pnl", 0)) if pos.get("percent_pnl") else 0,
+                "slug": pos.get("slug", ""),
+            }
+            formatted_positions.append(formatted_pos)
+        
+        return formatted_positions
+    else:
+        # Use original Polymarket data API
+        user_address = os.getenv("POLYMARKET_PROXY_ADDRESS")
+        
+        if not user_address:
+            raise ValueError("POLYMARKET_PROXY_ADDRESS not set in environment")
+        
+        base_url = "https://data-api.polymarket.com/positions"
+        
+        params = {
+            "user": user_address,
+            "limit": min(limit, 500),  # Cap at API maximum
+            "sortBy": sort_by,
+            "sortDirection": sort_direction,
         }
-        formatted_positions.append(formatted_pos)
-    
-    return formatted_positions
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(base_url, params=params)
+            response.raise_for_status()
+            positions = response.json()
+        
+        # Format positions for LLM consumption
+        formatted_positions = []
+        for pos in positions:
+            formatted_pos = {
+                "title": pos.get("title", "Unknown"),
+                "outcome": pos.get("outcome", "Unknown"),
+                "size": pos.get("size", 0),
+                "avg_price": pos.get("avgPrice", 0),
+                "current_price": pos.get("curPrice", 0),
+                "initial_value": pos.get("initialValue", 0),
+                "current_value": pos.get("currentValue", 0),
+                "cash_pnl": pos.get("cashPnl", 0),
+                "percent_pnl": pos.get("percentPnl", 0),
+                "realized_pnl": pos.get("realizedPnl", 0),
+                "percent_realized_pnl": pos.get("percentRealizedPnl", 0),
+                "total_bought": pos.get("totalBought", 0),
+                "end_date": pos.get("endDate", "Unknown"),
+                "slug": pos.get("slug", ""),
+                "event_slug": pos.get("eventSlug", ""),
+                "redeemable": pos.get("redeemable", False),
+                "mergeable": pos.get("mergeable", False),
+            }
+            formatted_positions.append(formatted_pos)
+        
+        return formatted_positions
 
 
 def get_active_orders() -> list[dict]:
@@ -127,29 +191,51 @@ def get_active_orders() -> list[dict]:
             - timestamp: When the order was created
             And other order details returned by the API
     """
-    # Initialize client
-    HOST = "https://clob.polymarket.com"
-    CHAIN_ID = 137
-    PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY")
-    FUNDER = os.getenv("POLYMARKET_PROXY_ADDRESS")  # Your Polymarket proxy address
-
-    if not PRIVATE_KEY:
-        raise ValueError("POLYMARKET_PRIVATE_KEY not set in environment")
-    if not FUNDER:
-        raise ValueError("POLYMARKET_PROXY_ADDRESS not set in environment")
-
-    client = ClobClient(
-        HOST,
-        key=PRIVATE_KEY,
-        chain_id=CHAIN_ID,
-        signature_type=1,  # 1 for email/Magic wallet, 2 for Metamask
-        funder=FUNDER
-    )
-
-    client.set_api_creds(client.create_or_derive_api_creds())
-
-    # Get all active orders
-    orders = client.get_orders(OpenOrderParams())
+    # Check if we should use poly-paper API
+    use_poly_paper = os.getenv("USE_POLY_PAPER", "0") == "1"
     
-    return orders
+    if use_poly_paper:
+        # Use poly-paper-trading-api
+        poly_paper_url = os.getenv("POLY_PAPER_URL")
+        poly_paper_account_name = os.getenv("POLY_PAPER_ACCOUNT_NAME")
+        
+        if not poly_paper_url or not poly_paper_account_name:
+            raise ValueError("POLY_PAPER_URL or POLY_PAPER_ACCOUNT_NAME not set in environment")
+        
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(
+                f"{poly_paper_url.rstrip('/')}/orders/open",
+                params={"account_name": poly_paper_account_name},
+            )
+            response.raise_for_status()
+            data = response.json()
+        
+        # Return the orders list from the response
+        return data.get("orders", [])
+    else:
+        # Use original ClobClient
+        HOST = "https://clob.polymarket.com"
+        CHAIN_ID = 137
+        PRIVATE_KEY = os.getenv("POLYMARKET_PRIVATE_KEY")
+        FUNDER = os.getenv("POLYMARKET_PROXY_ADDRESS")  # Your Polymarket proxy address
+
+        if not PRIVATE_KEY:
+            raise ValueError("POLYMARKET_PRIVATE_KEY not set in environment")
+        if not FUNDER:
+            raise ValueError("POLYMARKET_PROXY_ADDRESS not set in environment")
+
+        client = ClobClient(
+            HOST,
+            key=PRIVATE_KEY,
+            chain_id=CHAIN_ID,
+            signature_type=1,  # 1 for email/Magic wallet, 2 for Metamask
+            funder=FUNDER
+        )
+
+        client.set_api_creds(client.create_or_derive_api_creds())
+
+        # Get all active orders
+        orders = client.get_orders(OpenOrderParams())
+        
+        return orders
 
