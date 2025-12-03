@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.account import Account, AccountValue
+from models.order import Order, OrderSide, OrderStatus
 from models.position import Position
 
 POLYMARKET_CLOB_URL = "https://clob.polymarket.com"
@@ -337,7 +338,7 @@ async def get_positions_handler(
 async def update_account_value_handler(
     account_id: uuid.UUID, db: AsyncSession
 ) -> UpdateAccountValueResponse:
-    """Calculate and store the total account value (positions + cash)."""
+    """Calculate and store the total account value (positions + cash + open orders)."""
     try:
         # Get the account by id
         stmt = select(Account).where(Account.account_id == account_id)
@@ -355,22 +356,52 @@ async def update_account_value_handler(
         result = await db.execute(stmt)
         positions = result.scalars().all()
 
-        # Collect token IDs for positions with shares > 0
-        token_ids = [p.token_id for p in positions if p.shares > 0]
+        # Get all open orders for this account
+        stmt = select(Order).where(
+            Order.account_id == account_id,
+            Order.status == OrderStatus.OPEN,
+        )
+        result = await db.execute(stmt)
+        open_orders = result.scalars().all()
+
+        # Calculate reserved cash from BUY orders and reserved shares from SELL orders
+        reserved_cash = Decimal("0.00")
+        reserved_shares: dict[str, int] = {}  # token_id -> additional shares
+
+        for order in open_orders:
+            if order.side == OrderSide.BUY:
+                # BUY orders have reserved cash (price * size)
+                reserved_cash += order.price * order.size
+            else:
+                # SELL orders have reserved shares
+                reserved_shares[order.token_id] = (
+                    reserved_shares.get(order.token_id, 0) + order.size
+                )
+
+        # Build effective shares map: current position shares + reserved shares from SELL orders
+        effective_shares: dict[str, int] = {}
+        for position in positions:
+            effective_shares[position.token_id] = position.shares
+
+        for token_id, shares in reserved_shares.items():
+            effective_shares[token_id] = effective_shares.get(token_id, 0) + shares
+
+        # Collect token IDs with shares > 0 for price fetching
+        token_ids = [tid for tid, shares in effective_shares.items() if shares > 0]
 
         # Fetch all prices in one batch call
         prices = await get_batch_market_prices_for_tokens(token_ids)
 
-        # Calculate total position value
+        # Calculate total position value (including reserved shares from SELL orders)
         total_position_value = Decimal("0.00")
-        for position in positions:
-            if position.shares > 0:
-                current_price = prices.get(position.token_id)
+        for token_id, shares in effective_shares.items():
+            if shares > 0:
+                current_price = prices.get(token_id)
                 if current_price is not None:
-                    total_position_value += current_price * position.shares
+                    total_position_value += current_price * shares
 
-        # Total value = cash + positions
-        total_value = account.balance + total_position_value
+        # Total value = cash + reserved cash from BUY orders + position value
+        total_value = account.balance + reserved_cash + total_position_value
 
         # Insert new AccountValue record
         account_value = AccountValue(
