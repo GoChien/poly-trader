@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.account import Account
+from models.account import Account, AccountValue
 from models.position import Position
 
 POLYMARKET_CLOB_URL = "https://clob.polymarket.com"
@@ -59,6 +59,12 @@ class GetPositionsResponse(BaseModel):
     positions: list[PositionResponse]
 
 
+class UpdateAccountValueResponse(BaseModel):
+    account_id: uuid.UUID
+    account_name: str
+    total_value: Decimal
+
+
 async def get_market_price_for_token(token_id: str) -> Decimal | None:
     """
     Get the current market price for a token using the Polymarket CLOB API.
@@ -78,6 +84,38 @@ async def get_market_price_for_token(token_id: str) -> Decimal | None:
     except Exception:
         pass
     return None
+
+
+async def get_batch_market_prices_for_tokens(token_ids: list[str]) -> dict[str, Decimal]:
+    """
+    Get market prices for multiple tokens in a single API call.
+    Uses BUY side to get the price we could sell at (bid price).
+    
+    Returns a dict mapping token_id to price.
+    """
+    if not token_ids:
+        return {}
+
+    # Build request payload - request BUY side for each token
+    payload = [{"token_id": token_id, "side": "BUY"} for token_id in token_ids]
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{POLYMARKET_CLOB_URL}/prices",
+                json=payload,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                # Extract BUY price for each token
+                return {
+                    token_id: Decimal(prices.get("BUY", "0"))
+                    for token_id, prices in data.items()
+                    if prices.get("BUY")
+                }
+    except Exception:
+        pass
+    return {}
 
 
 async def get_market_metadata(token_id: str) -> dict | None:
@@ -294,4 +332,67 @@ async def get_positions_handler(
         account_name=account_name,
         positions=enriched_positions,
     )
+
+
+async def update_account_value_handler(
+    account_id: uuid.UUID, db: AsyncSession
+) -> UpdateAccountValueResponse:
+    """Calculate and store the total account value (positions + cash)."""
+    try:
+        # Get the account by id
+        stmt = select(Account).where(Account.account_id == account_id)
+        result = await db.execute(stmt)
+        account = result.scalar_one_or_none()
+
+        if not account:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Account with id '{account_id}' not found"
+            )
+
+        # Get all positions for this account
+        stmt = select(Position).where(Position.account_id == account_id)
+        result = await db.execute(stmt)
+        positions = result.scalars().all()
+
+        # Collect token IDs for positions with shares > 0
+        token_ids = [p.token_id for p in positions if p.shares > 0]
+
+        # Fetch all prices in one batch call
+        prices = await get_batch_market_prices_for_tokens(token_ids)
+
+        # Calculate total position value
+        total_position_value = Decimal("0.00")
+        for position in positions:
+            if position.shares > 0:
+                current_price = prices.get(position.token_id)
+                if current_price is not None:
+                    total_position_value += current_price * position.shares
+
+        # Total value = cash + positions
+        total_value = account.balance + total_position_value
+
+        # Insert new AccountValue record
+        account_value = AccountValue(
+            account_id=account.account_id,
+            account_name=account.account_name,
+            total_value=total_value,
+        )
+        db.add(account_value)
+        await db.commit()
+
+        return UpdateAccountValueResponse(
+            account_id=account.account_id,
+            account_name=account.account_name,
+            total_value=total_value,
+        )
+
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500, detail=f"Failed to update account value: {str(e)}"
+        )
 

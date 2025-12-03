@@ -11,16 +11,15 @@ from account_utils import (
     GetPositionsResponse,
     SetBalanceRequest,
     SetBalanceResponse,
+    UpdateAccountValueResponse,
     create_account_handler,
     get_balance_handler,
     get_positions_handler,
     set_balance_handler,
+    update_account_value_handler,
 )
 from database import close_db, get_db, init_db
 from models.account import Base
-from models.order import Order  # noqa: F401
-from models.position import Position  # noqa: F401
-from models.transaction import Transaction  # noqa: F401
 from order_utils import (
     CancelOrderResponse,
     GetOpenOrdersResponse,
@@ -144,3 +143,18 @@ async def process_open_orders(
     - If bid price >= limit price, fill the order at the limit price
     """
     return await process_open_orders_handler(db)
+
+
+@app.post("/accounts/{account_id}/value", response_model=UpdateAccountValueResponse)
+async def update_account_value(
+    account_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+) -> UpdateAccountValueResponse:
+    """
+    Calculate and store the total account value.
+    
+    - Retrieves all positions for the account
+    - Gets current market price for each position
+    - Calculates total value = sum of (position shares * current price) + cash balance
+    - Inserts a new record in the account_values table
+    """
+    return await update_account_value_handler(account_id, db)
