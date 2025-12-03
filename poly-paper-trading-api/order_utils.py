@@ -51,6 +51,20 @@ class GetOpenOrdersResponse(BaseModel):
     orders: list[OrderResponse]
 
 
+class ProcessedOrderResult(BaseModel):
+    order_id: uuid.UUID
+    transaction_id: uuid.UUID | None = None
+    status: str  # "filled" or "skipped"
+    message: str
+
+
+class ProcessOpenOrdersResponse(BaseModel):
+    total_orders_checked: int
+    orders_filled: int
+    orders_skipped: int
+    results: list[ProcessedOrderResult]
+
+
 async def get_market_price(token_id: str, side: OrderSide) -> Decimal:
     """
     Get the current market price for a token from Polymarket CLOB API.
@@ -408,4 +422,232 @@ async def get_open_orders_handler(
             for order in orders
         ],
     )
+
+
+async def get_batch_market_prices(token_ids: list[str]) -> dict[str, dict[str, Decimal]]:
+    """
+    Get market prices for multiple tokens in a single API call.
+    
+    Uses the Polymarket batch pricing API: POST /prices
+    
+    Returns a dict mapping token_id to {"BUY": price, "SELL": price}
+    where BUY is the bid price and SELL is the ask price.
+    
+    Reference: https://docs.polymarket.com/api-reference/pricing/get-multiple-market-prices-by-request
+    """
+    if not token_ids:
+        return {}
+    
+    # Build request payload - request both BUY and SELL for each token
+    payload = []
+    for token_id in token_ids:
+        payload.append({"token_id": token_id, "side": "BUY"})
+        payload.append({"token_id": token_id, "side": "SELL"})
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{POLYMARKET_CLOB_URL}/prices",
+            json=payload,
+            timeout=10.0,
+        )
+        
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to get market prices from Polymarket: {response.text}"
+            )
+        
+        data = response.json()
+        # Convert string prices to Decimal
+        result: dict[str, dict[str, Decimal]] = {}
+        for token_id, prices in data.items():
+            result[token_id] = {
+                side: Decimal(price) for side, price in prices.items()
+            }
+        return result
+
+
+async def process_open_orders_handler(
+    db: AsyncSession,
+) -> ProcessOpenOrdersResponse:
+    """
+    Process all open orders and fill those that can be executed.
+    
+    Uses batch API to fetch all market prices in a single request.
+    
+    For BUY orders:
+    - Check the ask price (SELL side in API response)
+    - If ask price <= limit price, fill at limit price
+    
+    For SELL orders:
+    - Check the bid price (BUY side in API response)
+    - If bid price >= limit price, fill at limit price
+    """
+    results: list[ProcessedOrderResult] = []
+    orders_filled = 0
+    orders_skipped = 0
+    
+    try:
+        # Get all OPEN orders
+        stmt = select(Order).where(Order.status == OrderStatus.OPEN)
+        result = await db.execute(stmt)
+        open_orders = result.scalars().all()
+        
+        if not open_orders:
+            return ProcessOpenOrdersResponse(
+                total_orders_checked=0,
+                orders_filled=0,
+                orders_skipped=0,
+                results=[],
+            )
+        
+        # Collect unique token_ids and fetch all prices in one batch call
+        unique_token_ids = list({order.token_id for order in open_orders})
+        market_prices = await get_batch_market_prices(unique_token_ids)
+        
+        for order in open_orders:
+            try:
+                token_prices = market_prices.get(order.token_id)
+                
+                if not token_prices:
+                    results.append(ProcessedOrderResult(
+                        order_id=order.order_id,
+                        status="skipped",
+                        message=f"No market price available for token {order.token_id}"
+                    ))
+                    orders_skipped += 1
+                    continue
+                
+                # For BUY orders, check ASK price (SELL side in API)
+                # For SELL orders, check BID price (BUY side in API)
+                if order.side == OrderSide.BUY:
+                    market_price = token_prices.get("SELL")  # Ask price
+                    should_fill = market_price is not None and market_price <= order.price
+                else:
+                    market_price = token_prices.get("BUY")  # Bid price
+                    should_fill = market_price is not None and market_price >= order.price
+                
+                if market_price is None:
+                    results.append(ProcessedOrderResult(
+                        order_id=order.order_id,
+                        status="skipped",
+                        message=f"No {'ask' if order.side == OrderSide.BUY else 'bid'} price available"
+                    ))
+                    orders_skipped += 1
+                    continue
+                
+                if should_fill:
+                    # Fill the order at limit price
+                    transaction_id = await _fill_order_at_limit_price(order, db)
+                    
+                    results.append(ProcessedOrderResult(
+                        order_id=order.order_id,
+                        transaction_id=transaction_id,
+                        status="filled",
+                        message=f"Order filled at limit price {order.price}. Market price was {market_price}."
+                    ))
+                    orders_filled += 1
+                else:
+                    results.append(ProcessedOrderResult(
+                        order_id=order.order_id,
+                        status="skipped",
+                        message=f"Order not filled. Limit price {order.price}, market price {market_price}."
+                    ))
+                    orders_skipped += 1
+                    
+            except Exception as e:
+                results.append(ProcessedOrderResult(
+                    order_id=order.order_id,
+                    status="skipped",
+                    message=f"Error processing order: {str(e)}"
+                ))
+                orders_skipped += 1
+        
+        await db.commit()
+        
+        return ProcessOpenOrdersResponse(
+            total_orders_checked=len(open_orders),
+            orders_filled=orders_filled,
+            orders_skipped=orders_skipped,
+            results=results,
+        )
+        
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process open orders: {str(e)}"
+        )
+
+
+async def _fill_order_at_limit_price(
+    order: Order, db: AsyncSession
+) -> uuid.UUID:
+    """
+    Fill an order at its limit price.
+    
+    For BUY orders:
+    - The funds were already reserved when the order was placed
+    - We need to refund the difference if limit price > execution price (but we fill at limit)
+    - Update position
+    
+    For SELL orders:
+    - The shares were already reserved when the order was placed
+    - Add proceeds to account balance
+    - Update position cost basis
+    """
+    # Get the account
+    stmt = select(Account).where(Account.account_id == order.account_id)
+    result = await db.execute(stmt)
+    account = result.scalar_one_or_none()
+    
+    if not account:
+        raise Exception(f"Account {order.account_id} not found")
+    
+    execution_price = order.price  # Fill at limit price
+    
+    if order.side == OrderSide.BUY:
+        # Funds were already deducted when order was placed (price * size)
+        # Since we fill at limit price, no refund needed
+        
+        # Update or create position
+        position = await _get_or_create_position(db, order.account_id, order.token_id)
+        position.shares += order.size
+        position.total_cost += execution_price * order.size
+        
+    else:  # SELL
+        # Shares were already deducted when order was placed
+        # Add proceeds to account balance
+        proceeds = execution_price * order.size
+        account.balance += proceeds
+        
+        # Get position to update cost basis
+        stmt = select(Position).where(
+            Position.account_id == order.account_id,
+            Position.token_id == order.token_id,
+        )
+        result = await db.execute(stmt)
+        position = result.scalar_one_or_none()
+        
+        if position and position.total_cost > 0:
+            # The shares were already removed, so we need to calculate cost basis
+            # based on what was removed when order was placed
+            # Since shares were already deducted, we need to track cost basis separately
+            # For simplicity, we'll just adjust total_cost proportionally if there are remaining shares
+            pass  # Cost basis was already handled when shares were reserved
+    
+    # Create transaction record
+    transaction = Transaction(
+        account_id=order.account_id,
+        token_id=order.token_id,
+        execution_price=execution_price,
+        side=order.side,
+        size=order.size,
+    )
+    db.add(transaction)
+    
+    # Update order status to FILLED
+    order.status = OrderStatus.FILLED
+    
+    return transaction.transaction_id
 

@@ -26,9 +26,11 @@ from order_utils import (
     GetOpenOrdersResponse,
     PlaceLimitOrderRequest,
     PlaceLimitOrderResponse,
+    ProcessOpenOrdersResponse,
     cancel_order_handler,
     get_open_orders_handler,
     place_limit_order_handler,
+    process_open_orders_handler,
 )
 
 
@@ -124,3 +126,21 @@ async def get_open_orders(
     Get all open orders for an account.
     """
     return await get_open_orders_handler(account_name, db)
+
+
+@app.post("/orders/process", response_model=ProcessOpenOrdersResponse)
+async def process_open_orders(
+    db: AsyncSession = Depends(get_db),
+) -> ProcessOpenOrdersResponse:
+    """
+    Process all open orders and fill those that can be executed.
+    
+    For BUY orders:
+    - Check the ask price from the market
+    - If ask price <= limit price, fill the order at the limit price
+    
+    For SELL orders:
+    - Check the bid price from the market
+    - If bid price >= limit price, fill the order at the limit price
+    """
+    return await process_open_orders_handler(db)
