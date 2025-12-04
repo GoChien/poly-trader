@@ -13,7 +13,6 @@ from models.strategy import Strategy
 
 
 class CreateStrategyRequest(BaseModel):
-    strategy_id: str
     account_id: uuid.UUID
     token_id: str
     thesis: str
@@ -71,22 +70,28 @@ class GetActiveStrategiesResponse(BaseModel):
     strategies: list[StrategyResponse]
 
 
+class UpdateStrategyRequest(BaseModel):
+    strategy_id: str  # ID of the strategy to update
+    thesis: Optional[str] = None
+    thesis_probability: Optional[Decimal] = None
+    entry_max_price: Optional[Decimal] = None
+    exit_take_profit_price: Optional[Decimal] = None
+    exit_stop_loss_price: Optional[Decimal] = None
+    exit_time_stop_utc: Optional[datetime] = None
+    valid_until_utc: Optional[datetime] = None
+    notes: Optional[str] = None
+
+
+class UpdateStrategyResponse(BaseModel):
+    old_strategy_id: str
+    new_strategy: StrategyResponse
+
+
 async def create_strategy_handler(
     request: CreateStrategyRequest, db: AsyncSession
 ) -> CreateStrategyResponse:
     """Create a new trading strategy."""
     try:
-        # Check if strategy with this ID already exists
-        stmt = select(Strategy).where(Strategy.strategy_id == request.strategy_id)
-        result = await db.execute(stmt)
-        existing_strategy = result.scalar_one_or_none()
-
-        if existing_strategy:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Strategy with id '{request.strategy_id}' already exists"
-            )
-
         # Verify the account exists
         stmt = select(Account).where(Account.account_id == request.account_id)
         result = await db.execute(stmt)
@@ -98,9 +103,31 @@ async def create_strategy_handler(
                 detail=f"Account with id '{request.account_id}' not found"
             )
 
+        # Check if there's already an active strategy for this account and token
+        now = datetime.now(timezone.utc)
+        stmt = select(Strategy).where(
+            Strategy.account_id == request.account_id,
+            Strategy.token_id == request.token_id,
+            or_(
+                Strategy.valid_until_utc > now,
+                Strategy.valid_until_utc.is_(None),
+            ),
+        )
+        result = await db.execute(stmt)
+        existing_strategy = result.scalar_one_or_none()
+
+        if existing_strategy:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Account already has an active strategy for token '{request.token_id}'"
+            )
+
+        # Generate strategy ID
+        strategy_id = str(uuid.uuid4())
+
         # Create new strategy
         strategy = Strategy(
-            strategy_id=request.strategy_id,
+            strategy_id=strategy_id,
             account_id=request.account_id,
             token_id=request.token_id,
             thesis=request.thesis,
@@ -209,5 +236,121 @@ async def get_active_strategies_handler(
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to get active strategies: {str(e)}"
+        )
+
+
+async def update_strategy_handler(
+    request: UpdateStrategyRequest, db: AsyncSession
+) -> UpdateStrategyResponse:
+    """
+    Update a strategy by expiring the old one and creating a new version.
+    
+    This implements an immutable update pattern:
+    1. Find the existing strategy
+    2. Set its valid_until_utc to now (expire it)
+    3. Create a new strategy with updated values and a new ID
+    """
+    try:
+        # Find the existing strategy
+        stmt = select(Strategy).where(Strategy.strategy_id == request.strategy_id)
+        result = await db.execute(stmt)
+        old_strategy = result.scalar_one_or_none()
+
+        if not old_strategy:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Strategy with id '{request.strategy_id}' not found"
+            )
+
+        now = datetime.now(timezone.utc)
+
+        # Check if strategy is already expired
+        if old_strategy.valid_until_utc and old_strategy.valid_until_utc <= now:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Strategy '{request.strategy_id}' is already expired"
+            )
+
+        # Expire the old strategy
+        old_strategy.valid_until_utc = now
+
+        # Generate new strategy ID
+        new_strategy_id = str(uuid.uuid4())
+
+        # Create new strategy with updated values (use old values as defaults)
+        new_strategy = Strategy(
+            strategy_id=new_strategy_id,
+            account_id=old_strategy.account_id,
+            token_id=old_strategy.token_id,
+            thesis=request.thesis if request.thesis is not None else old_strategy.thesis,
+            thesis_probability=(
+                request.thesis_probability
+                if request.thesis_probability is not None
+                else old_strategy.thesis_probability
+            ),
+            entry_max_price=(
+                request.entry_max_price
+                if request.entry_max_price is not None
+                else old_strategy.entry_max_price
+            ),
+            entry_min_implied_edge=old_strategy.entry_min_implied_edge,
+            entry_max_capital_risk=old_strategy.entry_max_capital_risk,
+            entry_max_position_shares=old_strategy.entry_max_position_shares,
+            exit_take_profit_price=(
+                request.exit_take_profit_price
+                if request.exit_take_profit_price is not None
+                else old_strategy.exit_take_profit_price
+            ),
+            exit_stop_loss_price=(
+                request.exit_stop_loss_price
+                if request.exit_stop_loss_price is not None
+                else old_strategy.exit_stop_loss_price
+            ),
+            exit_time_stop_utc=(
+                request.exit_time_stop_utc
+                if request.exit_time_stop_utc is not None
+                else old_strategy.exit_time_stop_utc
+            ),
+            valid_until_utc=(
+                request.valid_until_utc
+                if request.valid_until_utc is not None
+                else None  # New strategy starts without expiration unless specified
+            ),
+            notes=request.notes if request.notes is not None else old_strategy.notes,
+        )
+
+        db.add(new_strategy)
+        await db.commit()
+        await db.refresh(new_strategy)
+
+        return UpdateStrategyResponse(
+            old_strategy_id=request.strategy_id,
+            new_strategy=StrategyResponse(
+                strategy_id=new_strategy.strategy_id,
+                account_id=new_strategy.account_id,
+                token_id=new_strategy.token_id,
+                thesis=new_strategy.thesis,
+                thesis_probability=new_strategy.thesis_probability,
+                entry_max_price=new_strategy.entry_max_price,
+                entry_min_implied_edge=new_strategy.entry_min_implied_edge,
+                entry_max_capital_risk=new_strategy.entry_max_capital_risk,
+                entry_max_position_shares=new_strategy.entry_max_position_shares,
+                exit_take_profit_price=new_strategy.exit_take_profit_price,
+                exit_stop_loss_price=new_strategy.exit_stop_loss_price,
+                exit_time_stop_utc=new_strategy.exit_time_stop_utc,
+                valid_until_utc=new_strategy.valid_until_utc,
+                notes=new_strategy.notes,
+                created_at=new_strategy.created_at,
+                updated_at=new_strategy.updated_at,
+            ),
+        )
+
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500, detail=f"Failed to update strategy: {str(e)}"
         )
 

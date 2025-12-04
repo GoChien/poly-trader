@@ -39,8 +39,11 @@ from strategy_utils import (
     CreateStrategyRequest,
     CreateStrategyResponse,
     GetActiveStrategiesResponse,
+    UpdateStrategyRequest,
+    UpdateStrategyResponse,
     create_strategy_handler,
     get_active_strategies_handler,
+    update_strategy_handler,
 )
 
 
@@ -213,4 +216,25 @@ async def get_active_strategies(
     or if valid_until_utc is not set (null).
     """
     return await get_active_strategies_handler(account_name, db)
+
+
+@app.put("/strategies", response_model=UpdateStrategyResponse)
+async def update_strategy(
+    request: UpdateStrategyRequest, db: AsyncSession = Depends(get_db)
+) -> UpdateStrategyResponse:
+    """
+    Update a strategy using an immutable update pattern.
+    
+    This endpoint:
+    1. Finds the existing strategy by strategy_id
+    2. Expires it by setting valid_until_utc to now
+    3. Creates a new strategy with updated values and a new ID
+    
+    Updatable fields:
+    - thesis, thesis_probability
+    - entry_max_price
+    - exit_take_profit_price, exit_stop_loss_price, exit_time_stop_utc
+    - valid_until_utc, notes
+    """
+    return await update_strategy_handler(request, db)
 
