@@ -10,9 +10,14 @@ from google.adk.runners import Runner
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.genai.types import Content, Part
 from agents.agent import root_agent
+from strategy_agent.agent import root_agent as strategy_agent
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Select agent based on USE_STRATEGY environment variable
+USE_STRATEGY = os.getenv("USE_STRATEGY", "false").lower() == "true"
+active_agent = strategy_agent if USE_STRATEGY else root_agent
 
 # Get the directory where main.py is located
 AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -65,7 +70,7 @@ async def run_agent():
 
     # Initialize Runner
     runner = Runner(
-        agent=root_agent,
+        agent=active_agent,
         session_service=session_service,
         app_name=app_name
     )
