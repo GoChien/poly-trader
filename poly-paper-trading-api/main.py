@@ -23,6 +23,7 @@ from account_utils import (
 )
 from database import close_db, get_db, init_db
 from models.account import Base
+from models.strategy import Strategy  # noqa: F401 - imported for table creation
 from order_utils import (
     CancelOrderResponse,
     GetOpenOrdersResponse,
@@ -33,6 +34,11 @@ from order_utils import (
     get_open_orders_handler,
     place_limit_order_handler,
     process_open_orders_handler,
+)
+from strategy_utils import (
+    CreateStrategyRequest,
+    CreateStrategyResponse,
+    create_strategy_handler,
 )
 
 
@@ -177,4 +183,19 @@ async def get_account_value_history(
     ordered by timestamp ascending.
     """
     return await get_account_value_history_handler(account_name, start_time, end_time, db)
+
+
+@app.post("/strategies", response_model=CreateStrategyResponse)
+async def create_strategy(
+    request: CreateStrategyRequest, db: AsyncSession = Depends(get_db)
+) -> CreateStrategyResponse:
+    """
+    Create a new trading strategy.
+    
+    A strategy defines entry/exit conditions for a specific market position:
+    - Entry conditions: max price, min implied edge, capital risk limits
+    - Exit conditions: take profit, stop loss, time stop
+    - Thesis: reasoning and probability estimate
+    """
+    return await create_strategy_handler(request, db)
 
