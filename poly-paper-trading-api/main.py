@@ -38,7 +38,9 @@ from order_utils import (
 from strategy_utils import (
     CreateStrategyRequest,
     CreateStrategyResponse,
+    GetActiveStrategiesResponse,
     create_strategy_handler,
+    get_active_strategies_handler,
 )
 
 
@@ -198,4 +200,17 @@ async def create_strategy(
     - Thesis: reasoning and probability estimate
     """
     return await create_strategy_handler(request, db)
+
+
+@app.get("/strategies/active", response_model=GetActiveStrategiesResponse)
+async def get_active_strategies(
+    account_name: str, db: AsyncSession = Depends(get_db)
+) -> GetActiveStrategiesResponse:
+    """
+    Get all active strategies for an account.
+    
+    A strategy is considered active if valid_until_utc is later than the current time,
+    or if valid_until_utc is not set (null).
+    """
+    return await get_active_strategies_handler(account_name, db)
 
