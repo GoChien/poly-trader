@@ -29,6 +29,9 @@ def format_events(events: list[dict]) -> list[dict]:
             outcomes = market.get("outcomes")
             if isinstance(outcomes, str):
                 outcomes = json.loads(outcomes)
+            # If outcomes is None, set it to an empty list.
+            if not outcomes:
+                outcomes = []
 
             # Parse outcome_prices if it's a JSON string
             outcome_prices = market.get("outcomePrices")
@@ -42,6 +45,9 @@ def format_events(events: list[dict]) -> list[dict]:
             token_ids = market.get("clobTokenIds")
             if isinstance(token_ids, str):
                 token_ids = json.loads(token_ids)
+            # If token_ids is None, set it to an empty list.
+            if not token_ids:
+                token_ids = []
 
             formatted_market = {
                 "market_slug": market.get("slug"),
