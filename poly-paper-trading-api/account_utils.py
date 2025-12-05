@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 from datetime import datetime
@@ -299,17 +300,24 @@ async def get_positions_handler(
     positions = result.scalars().all()
 
     # Enrich each position with market data
+    # Fetch all market prices and metadata in parallel
+    token_ids = [position.token_id for position in positions]
+    
+    # Gather all API calls in parallel
+    market_prices_task = asyncio.gather(*[get_market_price_for_token(token_id) for token_id in token_ids])
+    market_metadata_task = asyncio.gather(*[get_market_metadata(token_id) for token_id in token_ids])
+    
+    market_prices, market_metadatas = await asyncio.gather(market_prices_task, market_metadata_task)
+    
+    # Build enriched positions with the fetched data
     enriched_positions = []
-    for position in positions:
+    for position, current_price, metadata in zip(positions, market_prices, market_metadatas):
         # Calculate avg_price
         avg_price = (
             position.total_cost / position.shares
             if position.shares > 0
             else Decimal("0")
         )
-        
-        # Fetch current market price
-        current_price = await get_market_price_for_token(position.token_id)
         
         # Calculate current_value and PnL if we have current price
         current_value = None
@@ -321,8 +329,7 @@ async def get_positions_handler(
             if position.total_cost > 0:
                 percent_pnl = (cash_pnl / position.total_cost) * 100
         
-        # Fetch market metadata (title, outcome, slug)
-        metadata = await get_market_metadata(position.token_id)
+        # Extract market metadata (title, outcome, slug)
         title = metadata.get("title") if metadata else None
         outcome = metadata.get("outcome") if metadata else None
         slug = metadata.get("slug") if metadata else None
