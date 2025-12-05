@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import database
 from models.account import Account
 from models.order import OrderSide
 from models.position import Position
@@ -582,10 +583,13 @@ async def process_strategies_handler(
                 results=[],
             )
 
-        # Process each strategy in parallel
-        # Note: We process them concurrently but they share the same db session
-        # The order placement will handle its own commits
-        tasks = [process_strategy_handler(strategy, db) for strategy in strategies]
+        # Process each strategy in parallel with separate sessions
+        # Each strategy gets its own session to avoid concurrent commit/rollback conflicts
+        async def process_with_new_session(strategy: Strategy) -> ProcessStrategyResult:
+            async with database.async_session_maker() as strategy_db:
+                return await process_strategy_handler(strategy, strategy_db)
+        
+        tasks = [process_with_new_session(strategy) for strategy in strategies]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Convert exceptions to error results
