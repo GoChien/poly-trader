@@ -105,15 +105,18 @@ async def get_market_price_for_token(token_id: str) -> Decimal | None:
 async def get_batch_market_prices_for_tokens(token_ids: list[str]) -> dict[str, Decimal]:
     """
     Get market prices for multiple tokens in a single API call.
-    Uses BUY side to get the price we could sell at (bid price).
+    Returns the midpoint price (average of BUY and SELL) for better value evaluation.
     
-    Returns a dict mapping token_id to price.
+    Returns a dict mapping token_id to midpoint price.
     """
     if not token_ids:
         return {}
 
-    # Build request payload - request BUY side for each token
-    payload = [{"token_id": token_id, "side": "BUY"} for token_id in token_ids]
+    # Build request payload - request both BUY and SELL sides for each token
+    payload = []
+    for token_id in token_ids:
+        payload.append({"token_id": token_id, "side": "BUY"})
+        payload.append({"token_id": token_id, "side": "SELL"})
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -123,12 +126,19 @@ async def get_batch_market_prices_for_tokens(token_ids: list[str]) -> dict[str, 
             )
             if response.status_code == 200:
                 data = response.json()
-                # Extract BUY price for each token
-                return {
-                    token_id: Decimal(prices.get("BUY", "0"))
-                    for token_id, prices in data.items()
-                    if prices.get("BUY")
-                }
+                # Calculate midpoint price for each token
+                result = {}
+                for token_id, prices in data.items():
+                    buy_price = prices.get("BUY")
+                    sell_price = prices.get("SELL")
+                    if buy_price and sell_price:
+                        # Midpoint = (BUY + SELL) / 2
+                        result[token_id] = (Decimal(buy_price) + Decimal(sell_price)) / 2
+                    elif buy_price:
+                        result[token_id] = Decimal(buy_price)
+                    elif sell_price:
+                        result[token_id] = Decimal(sell_price)
+                return result
     except Exception:
         pass
     return {}
