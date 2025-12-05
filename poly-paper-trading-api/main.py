@@ -1,3 +1,4 @@
+import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -48,6 +49,9 @@ from strategy_utils import (
     update_strategy_handler,
 )
 
+# Only import monitoring if running in GCP (project ID is set)
+ENABLE_MONITORING = bool(os.environ.get("GOOGLE_CLOUD_PROJECT"))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -56,8 +60,20 @@ async def lifespan(app: FastAPI):
     # Create tables on startup
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    
+    # Set up Cloud Monitoring if running in GCP
+    shutdown_monitoring = None
+    if ENABLE_MONITORING:
+        from monitoring import setup_monitoring
+        from monitoring import shutdown_monitoring as _shutdown_monitoring
+        setup_monitoring(app)
+        shutdown_monitoring = _shutdown_monitoring
+    
     yield
+    
     # Cleanup on shutdown
+    if shutdown_monitoring:
+        await shutdown_monitoring(app)
     await close_db()
 
 
