@@ -142,3 +142,83 @@ async def create_strategy(
     
     return data
 
+
+async def update_strategy(
+    strategy_id: str,
+    thesis: Optional[str] = None,
+    thesis_probability: Optional[float] = None,
+    entry_max_price: Optional[float] = None,
+    exit_take_profit_price: Optional[float] = None,
+    exit_stop_loss_price: Optional[float] = None,
+    exit_time_stop_utc: Optional[str] = None,
+    valid_until_utc: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> dict:
+    """Update an existing trading strategy when new information changes the thesis.
+    
+    This uses an immutable update pattern:
+    1. Finds the existing strategy by strategy_id
+    2. Expires it by setting valid_until_utc to now
+    3. Creates a new strategy with updated values and a new ID
+    
+    Use this tool when new information emerges that changes your probability estimate
+    or other parameters of an existing strategy.
+    
+    Args:
+        strategy_id (str): The ID of the strategy to update.
+        thesis (str, optional): Updated evidence-based explanation of why this trade 
+            should have positive expected value.
+        thesis_probability (float, optional): Updated estimated probability that this 
+            outcome occurs (between 0.0 and 1.0, e.g., 0.68 for 68%).
+        entry_max_price (float, optional): Updated maximum price to enter position 
+            (between 0.0 and 1.0).
+        exit_take_profit_price (float, optional): Updated price to take profit and exit 
+            (between 0.0 and 1.0).
+        exit_stop_loss_price (float, optional): Updated price to cut losses and exit 
+            (between 0.0 and 1.0).
+        exit_time_stop_utc (str, optional): Updated ISO 8601 datetime string for 
+            time-based exit (e.g., "2025-12-31T23:59:59Z").
+        valid_until_utc (str, optional): Updated ISO 8601 datetime string for when 
+            strategy expires (e.g., "2025-12-31T23:59:59Z").
+        notes (str, optional): Updated notes or context for this strategy.
+    
+    Returns:
+        dict: Contains:
+            - old_strategy_id (str): The ID of the expired strategy
+            - new_strategy (dict): The newly created strategy with updated values
+    """
+    poly_paper_url = os.getenv("POLY_PAPER_URL")
+    
+    if not poly_paper_url:
+        raise ValueError("POLY_PAPER_URL not set in environment")
+    
+    # Build request payload with only provided fields
+    payload = {"strategy_id": strategy_id}
+    
+    if thesis is not None:
+        payload["thesis"] = thesis
+    if thesis_probability is not None:
+        payload["thesis_probability"] = thesis_probability
+    if entry_max_price is not None:
+        payload["entry_max_price"] = entry_max_price
+    if exit_take_profit_price is not None:
+        payload["exit_take_profit_price"] = exit_take_profit_price
+    if exit_stop_loss_price is not None:
+        payload["exit_stop_loss_price"] = exit_stop_loss_price
+    if exit_time_stop_utc is not None:
+        payload["exit_time_stop_utc"] = exit_time_stop_utc
+    if valid_until_utc is not None:
+        payload["valid_until_utc"] = valid_until_utc
+    if notes is not None:
+        payload["notes"] = notes
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.put(
+            f"{poly_paper_url.rstrip('/')}/strategies",
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+    
+    return data
+

@@ -1,7 +1,7 @@
 from google.adk.agents.llm_agent import Agent
 from google.adk.tools.agent_tool import AgentTool
 from agents.trading_tools import list_events, search_events_and_markets
-from agents.strategy_tools import create_strategy, get_active_strategies
+from agents.strategy_tools import create_strategy, get_active_strategies, update_strategy
 from agents.user_tools import get_cash_balance, get_user_positions
 from agents.search_agent import google_search_agent
 from agents import prompts
@@ -15,6 +15,7 @@ root_agent = Agent(
         # Strategy management
         get_active_strategies,
         create_strategy,
+        update_strategy,
         # Portfolio state
         get_cash_balance,
         get_user_positions,
