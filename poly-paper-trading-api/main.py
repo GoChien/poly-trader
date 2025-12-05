@@ -61,23 +61,27 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     
-    # Set up Cloud Monitoring if running in GCP
-    shutdown_monitoring = None
+    # Initialize Cloud Monitoring metrics if running in GCP
     if ENABLE_MONITORING:
-        from monitoring import setup_monitoring
-        from monitoring import shutdown_monitoring as _shutdown_monitoring
-        setup_monitoring(app)
-        shutdown_monitoring = _shutdown_monitoring
+        from monitoring import init_monitoring
+        init_monitoring()
     
     yield
     
     # Cleanup on shutdown
-    if shutdown_monitoring:
-        await shutdown_monitoring(app)
+    if ENABLE_MONITORING:
+        from monitoring import shutdown_monitoring
+        shutdown_monitoring()
     await close_db()
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Add monitoring middleware (must be added before app starts)
+# The middleware itself checks if monitoring is initialized before recording metrics
+if ENABLE_MONITORING:
+    from monitoring import MonitoringMiddleware
+    app.add_middleware(MonitoringMiddleware)
 
 
 @app.get("/")
