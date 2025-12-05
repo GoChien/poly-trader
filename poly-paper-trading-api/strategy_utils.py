@@ -1,3 +1,5 @@
+import asyncio
+import math
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -9,7 +11,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.account import Account
+from models.order import OrderSide
+from models.position import Position
 from models.strategy import Strategy
+from order_utils import get_market_price, PlaceLimitOrderRequest, place_limit_order_handler
 
 
 class CreateStrategyRequest(BaseModel):
@@ -354,3 +359,260 @@ async def update_strategy_handler(
             status_code=500, detail=f"Failed to update strategy: {str(e)}"
         )
 
+
+class ProcessStrategyResult(BaseModel):
+    strategy_id: str
+    token_id: str
+    action: str  # "buy", "sell_take_profit", "sell_stop_loss", "hold", "skip"
+    reason: str
+    order_size: Optional[int] = None
+    order_price: Optional[Decimal] = None
+    current_bid_price: Optional[Decimal] = None
+    current_ask_price: Optional[Decimal] = None
+
+
+async def process_strategy_handler(
+    strategy: Strategy, db: AsyncSession
+) -> ProcessStrategyResult:
+    """
+    Process a single trading strategy and execute trades based on entry/exit rules.
+    
+    Entry rules (when no position exists):
+    1. If current ask price > entry_max_price: skip
+    2. Calculate edge = thesis_probability - current_ask_price
+    3. If edge < entry_min_implied_edge: skip
+    4. Calculate size = min(floor(max_capital_risk / ask_price), max_position_shares)
+    5. Place buy order
+    
+    Exit rules (when position exists):
+    1. If current bid price >= exit_take_profit_price: sell (take profit)
+    2. If current bid price <= exit_stop_loss_price: sell (stop loss)
+    3. Otherwise: hold
+    """
+    try:
+        # 1. Get market prices (both bid and ask)
+        ask_price = await get_market_price(strategy.token_id, OrderSide.BUY)  # Ask price for buying
+        bid_price = await get_market_price(strategy.token_id, OrderSide.SELL)  # Bid price for selling
+        
+        # 2. Get existing position for this token under this account
+        stmt = select(Position).where(
+            Position.account_id == strategy.account_id,
+            Position.token_id == strategy.token_id,
+        )
+        result = await db.execute(stmt)
+        position = result.scalar_one_or_none()
+        
+        has_position = position is not None and position.shares > 0
+        
+        # 3. If already have a position, check exit rules first
+        if has_position:
+            # Check take profit
+            if bid_price >= strategy.exit_take_profit_price:
+                # Place sell order for all shares at bid price
+                order_request = PlaceLimitOrderRequest(
+                    account_id=strategy.account_id,
+                    price=bid_price,
+                    size=position.shares,
+                    side=OrderSide.SELL,
+                    token_id=strategy.token_id,
+                )
+                await place_limit_order_handler(order_request, db)
+                
+                return ProcessStrategyResult(
+                    strategy_id=strategy.strategy_id,
+                    token_id=strategy.token_id,
+                    action="sell_take_profit",
+                    reason=f"Take profit triggered: bid price {bid_price} >= target {strategy.exit_take_profit_price}",
+                    order_size=position.shares,
+                    order_price=bid_price,
+                    current_bid_price=bid_price,
+                    current_ask_price=ask_price,
+                )
+            
+            # Check stop loss
+            if bid_price <= strategy.exit_stop_loss_price:
+                # Place sell order for all shares at bid price
+                order_request = PlaceLimitOrderRequest(
+                    account_id=strategy.account_id,
+                    price=bid_price,
+                    size=position.shares,
+                    side=OrderSide.SELL,
+                    token_id=strategy.token_id,
+                )
+                await place_limit_order_handler(order_request, db)
+                
+                return ProcessStrategyResult(
+                    strategy_id=strategy.strategy_id,
+                    token_id=strategy.token_id,
+                    action="sell_stop_loss",
+                    reason=f"Stop loss triggered: bid price {bid_price} <= stop loss {strategy.exit_stop_loss_price}",
+                    order_size=position.shares,
+                    order_price=bid_price,
+                    current_bid_price=bid_price,
+                    current_ask_price=ask_price,
+                )
+            
+            # Otherwise, keep holding
+            return ProcessStrategyResult(
+                strategy_id=strategy.strategy_id,
+                token_id=strategy.token_id,
+                action="hold",
+                reason=f"Holding position: bid price {bid_price} within range (stop loss: {strategy.exit_stop_loss_price}, take profit: {strategy.exit_take_profit_price})",
+                current_bid_price=bid_price,
+                current_ask_price=ask_price,
+            )
+        
+        # 4. No position, check entry rules
+        # Check if current price is higher than max entry price
+        if ask_price > strategy.entry_max_price:
+            return ProcessStrategyResult(
+                strategy_id=strategy.strategy_id,
+                token_id=strategy.token_id,
+                action="skip",
+                reason=f"Price too high: ask price {ask_price} > max entry price {strategy.entry_max_price}",
+                current_bid_price=bid_price,
+                current_ask_price=ask_price,
+            )
+        
+        # Calculate edge = thesis_probability - current_ask_price
+        edge = strategy.thesis_probability - ask_price
+        
+        if edge < strategy.entry_min_implied_edge:
+            return ProcessStrategyResult(
+                strategy_id=strategy.strategy_id,
+                token_id=strategy.token_id,
+                action="skip",
+                reason=f"Edge too low: edge {edge} < min edge {strategy.entry_min_implied_edge}",
+                current_bid_price=bid_price,
+                current_ask_price=ask_price,
+            )
+        
+        # Calculate position size
+        max_shares_by_risk = math.floor(strategy.entry_max_capital_risk / ask_price)
+        size = min(max_shares_by_risk, strategy.entry_max_position_shares)
+        
+        if size <= 0:
+            return ProcessStrategyResult(
+                strategy_id=strategy.strategy_id,
+                token_id=strategy.token_id,
+                action="skip",
+                reason=f"Calculated size is 0: max_capital_risk={strategy.entry_max_capital_risk}, ask_price={ask_price}",
+                current_bid_price=bid_price,
+                current_ask_price=ask_price,
+            )
+        
+        # Place buy order
+        order_request = PlaceLimitOrderRequest(
+            account_id=strategy.account_id,
+            price=ask_price,
+            size=size,
+            side=OrderSide.BUY,
+            token_id=strategy.token_id,
+        )
+        await place_limit_order_handler(order_request, db)
+        
+        return ProcessStrategyResult(
+            strategy_id=strategy.strategy_id,
+            token_id=strategy.token_id,
+            action="buy",
+            reason=f"Entry conditions met: edge {edge} >= min edge {strategy.entry_min_implied_edge}, price {ask_price} <= max {strategy.entry_max_price}",
+            order_size=size,
+            order_price=ask_price,
+            current_bid_price=bid_price,
+            current_ask_price=ask_price,
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process strategy {strategy.strategy_id}: {str(e)}"
+        )
+
+
+class ProcessStrategiesResponse(BaseModel):
+    account_name: str
+    total_strategies: int
+    results: list[ProcessStrategyResult]
+
+
+async def process_strategies_handler(
+    account_name: str, db: AsyncSession
+) -> ProcessStrategiesResponse:
+    """
+    Process all active strategies for an account.
+    
+    1. Queries all active strategies (valid_until_utc > now or null)
+    2. Processes each strategy in parallel using process_strategy_handler
+    3. Returns results for all strategies
+    """
+    try:
+        # Find the account by name
+        stmt = select(Account).where(Account.account_name == account_name)
+        result = await db.execute(stmt)
+        account = result.scalar_one_or_none()
+
+        if not account:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Account with name '{account_name}' not found"
+            )
+
+        # Get active strategies (valid_until_utc > now OR valid_until_utc is null)
+        now = datetime.now(timezone.utc)
+        stmt = (
+            select(Strategy)
+            .where(
+                Strategy.account_id == account.account_id,
+                or_(
+                    Strategy.valid_until_utc > now,
+                    Strategy.valid_until_utc.is_(None),
+                ),
+            )
+            .order_by(Strategy.created_at.desc())
+        )
+        result = await db.execute(stmt)
+        strategies = result.scalars().all()
+
+        if not strategies:
+            return ProcessStrategiesResponse(
+                account_name=account_name,
+                total_strategies=0,
+                results=[],
+            )
+
+        # Process each strategy in parallel
+        # Note: We process them concurrently but they share the same db session
+        # The order placement will handle its own commits
+        tasks = [process_strategy_handler(strategy, db) for strategy in strategies]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Convert exceptions to error results
+        processed_results: list[ProcessStrategyResult] = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                processed_results.append(
+                    ProcessStrategyResult(
+                        strategy_id=strategies[i].strategy_id,
+                        token_id=strategies[i].token_id,
+                        action="error",
+                        reason=str(result),
+                    )
+                )
+            else:
+                processed_results.append(result)
+
+        return ProcessStrategiesResponse(
+            account_name=account_name,
+            total_strategies=len(strategies),
+            results=processed_results,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process strategies: {str(e)}"
+        )

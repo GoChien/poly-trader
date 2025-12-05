@@ -39,10 +39,12 @@ from strategy_utils import (
     CreateStrategyRequest,
     CreateStrategyResponse,
     GetActiveStrategiesResponse,
+    ProcessStrategiesResponse,
     UpdateStrategyRequest,
     UpdateStrategyResponse,
     create_strategy_handler,
     get_active_strategies_handler,
+    process_strategies_handler,
     update_strategy_handler,
 )
 
@@ -237,4 +239,20 @@ async def update_strategy(
     - valid_until_utc, notes
     """
     return await update_strategy_handler(request, db)
+
+
+@app.post("/strategies/process", response_model=ProcessStrategiesResponse)
+async def process_strategies(
+    account_name: str, db: AsyncSession = Depends(get_db)
+) -> ProcessStrategiesResponse:
+    """
+    Process all active strategies for an account.
+    
+    For each active strategy:
+    - If there's an existing position, checks exit rules (take profit, stop loss)
+    - If no position, checks entry rules and places buy orders if conditions are met
+    
+    Strategies are processed in parallel for efficiency.
+    """
+    return await process_strategies_handler(account_name, db)
 
