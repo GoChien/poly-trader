@@ -108,10 +108,17 @@ async def place_limit_order_handler(
     - Check if there's sufficient shares in positions
     - If limit price <= market price, fill immediately at market price
     - Otherwise, create an open order
+    
+    Note: Uses SELECT ... FOR UPDATE to lock the account row and prevent
+    race conditions when multiple strategies place orders concurrently.
     """
     try:
-        # Get the account
-        stmt = select(Account).where(Account.account_id == request.account_id)
+        # Get current market price BEFORE acquiring the lock to minimize lock hold time
+        market_price = await get_market_price(request.token_id, request.side)
+        
+        # Get the account with row-level lock to prevent concurrent modifications
+        # This ensures balance read and update happen atomically
+        stmt = select(Account).where(Account.account_id == request.account_id).with_for_update()
         result = await db.execute(stmt)
         account = result.scalar_one_or_none()
         
@@ -120,9 +127,6 @@ async def place_limit_order_handler(
                 status_code=404,
                 detail=f"Account with id '{request.account_id}' not found"
             )
-        
-        # Get current market price
-        market_price = await get_market_price(request.token_id, request.side)
         
         if request.side == OrderSide.BUY:
             return await _handle_buy_order(request, account, market_price, db)
@@ -162,9 +166,9 @@ async def _handle_buy_order(
         # Deduct from account balance
         account.balance -= execution_cost
         
-        # Update or create position
+        # Update or create position (with lock to prevent concurrent modifications)
         position = await _get_or_create_position(
-            db, request.account_id, request.token_id
+            db, request.account_id, request.token_id, lock=True
         )
         position.shares += request.size
         position.total_cost += execution_cost
@@ -218,11 +222,11 @@ async def _handle_sell_order(
     db: AsyncSession,
 ) -> PlaceLimitOrderResponse:
     """Handle SELL order logic."""
-    # Check position for sufficient shares
+    # Check position for sufficient shares (with lock to prevent concurrent modifications)
     stmt = select(Position).where(
         Position.account_id == request.account_id,
         Position.token_id == request.token_id,
-    )
+    ).with_for_update()
     result = await db.execute(stmt)
     position = result.scalar_one_or_none()
     
@@ -291,13 +295,22 @@ async def _handle_sell_order(
 
 
 async def _get_or_create_position(
-    db: AsyncSession, account_id: uuid.UUID, token_id: str
+    db: AsyncSession, account_id: uuid.UUID, token_id: str, lock: bool = False
 ) -> Position:
-    """Get existing position or create a new one."""
+    """Get existing position or create a new one.
+    
+    Args:
+        db: Database session
+        account_id: Account UUID
+        token_id: Token ID
+        lock: If True, use SELECT ... FOR UPDATE to lock the row
+    """
     stmt = select(Position).where(
         Position.account_id == account_id,
         Position.token_id == token_id,
     )
+    if lock:
+        stmt = stmt.with_for_update()
     result = await db.execute(stmt)
     position = result.scalar_one_or_none()
     
@@ -320,10 +333,12 @@ async def cancel_order_handler(
     Cancel an open order.
     
     Only orders with status OPEN can be cancelled.
+    
+    Note: Uses SELECT ... FOR UPDATE to lock rows and prevent race conditions.
     """
     try:
-        # Get the order
-        stmt = select(Order).where(Order.order_id == order_id)
+        # Get the order with lock
+        stmt = select(Order).where(Order.order_id == order_id).with_for_update()
         result = await db.execute(stmt)
         order = result.scalar_one_or_none()
         
@@ -342,7 +357,7 @@ async def cancel_order_handler(
         
         # If BUY order, refund reserved funds
         if order.side == OrderSide.BUY:
-            stmt = select(Account).where(Account.account_id == order.account_id)
+            stmt = select(Account).where(Account.account_id == order.account_id).with_for_update()
             result = await db.execute(stmt)
             account = result.scalar_one_or_none()
             
@@ -355,7 +370,7 @@ async def cancel_order_handler(
             stmt = select(Position).where(
                 Position.account_id == order.account_id,
                 Position.token_id == order.token_id,
-            )
+            ).with_for_update()
             result = await db.execute(stmt)
             position = result.scalar_one_or_none()
             
@@ -595,9 +610,11 @@ async def _fill_order_at_limit_price(
     - The shares were already reserved when the order was placed
     - Add proceeds to account balance
     - Update position cost basis
+    
+    Note: Uses SELECT ... FOR UPDATE to lock rows and prevent race conditions.
     """
-    # Get the account
-    stmt = select(Account).where(Account.account_id == order.account_id)
+    # Get the account with lock to prevent concurrent modifications
+    stmt = select(Account).where(Account.account_id == order.account_id).with_for_update()
     result = await db.execute(stmt)
     account = result.scalar_one_or_none()
     
@@ -610,8 +627,8 @@ async def _fill_order_at_limit_price(
         # Funds were already deducted when order was placed (price * size)
         # Since we fill at limit price, no refund needed
         
-        # Update or create position
-        position = await _get_or_create_position(db, order.account_id, order.token_id)
+        # Update or create position (with lock)
+        position = await _get_or_create_position(db, order.account_id, order.token_id, lock=True)
         position.shares += order.size
         position.total_cost += execution_price * order.size
         
@@ -621,11 +638,11 @@ async def _fill_order_at_limit_price(
         proceeds = execution_price * order.size
         account.balance += proceeds
         
-        # Get position to update cost basis
+        # Get position to update cost basis (with lock)
         stmt = select(Position).where(
             Position.account_id == order.account_id,
             Position.token_id == order.token_id,
-        )
+        ).with_for_update()
         result = await db.execute(stmt)
         position = result.scalar_one_or_none()
         
