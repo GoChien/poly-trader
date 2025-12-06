@@ -1,3 +1,4 @@
+import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -6,7 +7,15 @@ from datetime import datetime
 from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
 from account_utils import (
+    AuditAccountResponse,
     CreateAccountRequest,
     CreateAccountResponse,
     GetAccountValueHistoryResponse,
@@ -15,6 +24,7 @@ from account_utils import (
     SetBalanceRequest,
     SetBalanceResponse,
     UpdateAccountValueResponse,
+    audit_account_handler,
     create_account_handler,
     get_account_value_history_handler,
     get_balance_handler,
@@ -275,4 +285,29 @@ async def process_strategies(
     Strategies are processed in parallel for efficiency.
     """
     return await process_strategies_handler(account_name, db)
+
+
+@app.get("/accounts/audit", response_model=AuditAccountResponse)
+async def audit_account(
+    account_name: str, db: AsyncSession = Depends(get_db)
+) -> AuditAccountResponse:
+    """
+    Audit account data integrity by recalculating cash and positions from transactions.
+    
+    This endpoint verifies that the account's cash balance and positions match
+    what they should be based on all transactions, using transactions as the source of truth.
+    
+    Process:
+    1. Starts with initial balance of $10,000
+    2. Replays all transactions in chronological order:
+       - BUY: subtract (price × size) from cash, add size to position
+       - SELL: add (price × size) to cash, subtract size from position
+    3. Compares calculated values with actual database values
+    
+    Returns:
+    - Expected vs actual balance (with difference)
+    - Expected vs actual positions for each token (with differences)
+    - Whether the account is consistent (all values match)
+    """
+    return await audit_account_handler(account_name, db)
 
