@@ -63,3 +63,5 @@ dmypy.json
 # Ruff
 .ruff_cache/
 
+# Kalshi Keys
+kalshi_keys/

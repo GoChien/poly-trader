@@ -14,4 +14,5 @@ dependencies = [
     "opentelemetry-api>=1.25.0",
     "opentelemetry-sdk>=1.25.0",
     "opentelemetry-exporter-gcp-monitoring>=1.6.0",
+    "cryptography>=43.0.0",
 ]

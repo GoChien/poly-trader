@@ -32,6 +32,10 @@ from account_utils import (
     set_balance_handler,
     update_account_value_handler,
 )
+from kalshi_utils import (
+    GetKalshiBalanceResponse,
+    get_kalshi_balance_handler,
+)
 from database import close_db, get_db, init_db
 from models.account import Base
 from models.strategy import Strategy  # noqa: F401 - imported for table creation
@@ -310,4 +314,21 @@ async def audit_account(
     - Whether the account is consistent (all values match)
     """
     return await audit_account_handler(account_name, db)
+
+
+@app.get("/kalshi/balance", response_model=GetKalshiBalanceResponse)
+async def get_kalshi_balance() -> GetKalshiBalanceResponse:
+    """
+    Get current Kalshi account balance from the Kalshi API.
+    
+    This endpoint connects to the Kalshi API using credentials from environment variables:
+    - KALSHI_API_KEY_ID: The API key ID
+    - KALSHI_PRIVATE_KEY_PATH: Path to the private key file (optional, defaults to kalshi_keys/gemini-demo.txt)
+    
+    Returns:
+    - balance: Member's available balance in cents (amount available for trading)
+    - portfolio_value: Member's portfolio value in cents (current value of all positions held)
+    - updated_ts: Unix timestamp of the last update to the balance
+    """
+    return await get_kalshi_balance_handler()
 
