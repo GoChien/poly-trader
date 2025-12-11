@@ -33,11 +33,15 @@ from account_utils import (
     update_account_value_handler,
 )
 from kalshi_utils import (
+    CreateKalshiAccountRequest,
+    CreateKalshiAccountResponse,
     GetKalshiBalanceResponse,
-    get_kalshi_balance_handler,
+    create_kalshi_account_handler,
+    get_kalshi_account_balance,
 )
 from database import close_db, get_db, init_db
 from models.account import Base
+from models.kalshi_account import KalshiAccount  # noqa: F401 - imported for table creation
 from models.strategy import Strategy  # noqa: F401 - imported for table creation
 from order_utils import (
     CancelOrderResponse,
@@ -304,8 +308,8 @@ async def audit_account(
     Process:
     1. Starts with initial balance of $10,000
     2. Replays all transactions in chronological order:
-       - BUY: subtract (price × size) from cash, add size to position
-       - SELL: add (price × size) to cash, subtract size from position
+       - BUY: subtract (price x size) from cash, add size to position
+       - SELL: add (price x size) to cash, subtract size from position
     3. Compares calculated values with actual database values
     
     Returns:
@@ -316,19 +320,45 @@ async def audit_account(
     return await audit_account_handler(account_name, db)
 
 
+@app.post("/kalshi/accounts", response_model=CreateKalshiAccountResponse)
+async def create_kalshi_account(
+    request: CreateKalshiAccountRequest, db: AsyncSession = Depends(get_db)
+) -> CreateKalshiAccountResponse:
+    """
+    Create a new Kalshi account by storing API credentials.
+    
+    This endpoint stores Kalshi API credentials in the database for later use:
+    - account_name: Unique name to identify this Kalshi account
+    - key_id: The Kalshi API key ID
+    - secret_name: Name of the secret in GCP Secret Manager containing the private key
+    - is_demo: Whether this is a demo account (uses demo-api.kalshi.co) or production (uses api.elections.kalshi.com)
+    
+    Returns:
+    - The created account details including the generated account_id
+    """
+    return await create_kalshi_account_handler(request, db)
+
+
 @app.get("/kalshi/balance", response_model=GetKalshiBalanceResponse)
-async def get_kalshi_balance() -> GetKalshiBalanceResponse:
+async def get_kalshi_balance(
+    account_name: str, db: AsyncSession = Depends(get_db)
+) -> GetKalshiBalanceResponse:
     """
     Get current Kalshi account balance from the Kalshi API.
     
-    This endpoint connects to the Kalshi API using credentials from environment variables:
-    - KALSHI_API_KEY_ID: The API key ID
-    - KALSHI_PRIVATE_KEY_PATH: Path to the private key file (optional, defaults to kalshi_keys/gemini-demo.txt)
+    This endpoint connects to the Kalshi API using credentials from the database:
+    - account_name: Name of the Kalshi account to query balance for
+    
+    The endpoint will:
+    1. Look up the Kalshi account credentials in the database
+    2. Connect to the appropriate Kalshi API (demo or production based on is_demo flag)
+    3. Return the current balance information
     
     Returns:
     - balance: Member's available balance in cents (amount available for trading)
     - portfolio_value: Member's portfolio value in cents (current value of all positions held)
     - updated_ts: Unix timestamp of the last update to the balance
     """
-    return await get_kalshi_balance_handler()
+    balance_data = await get_kalshi_account_balance(db, account_name)
+    return GetKalshiBalanceResponse(**balance_data)
 

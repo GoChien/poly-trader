@@ -1,163 +1,256 @@
 import os
 import base64
 import datetime
-from pathlib import Path
 from typing import Optional
 import httpx
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.backends import default_backend
 from cryptography.exceptions import InvalidSignature
+from google.cloud import secretmanager
+
+from models.kalshi_account import KalshiAccount
 
 
-class KalshiClient:
-    """Client for interacting with Kalshi API"""
+async def _get_kalshi_account(db: AsyncSession, account_name: str) -> KalshiAccount:
+    """
+    Retrieve KalshiAccount from database by account name
     
-    def __init__(
-        self,
-        api_key_id: Optional[str] = None,
-        private_key_path: Optional[str] = None,
-        base_url: str = "https://demo-api.kalshi.co"
-    ):
-        """
-        Initialize Kalshi API client
+    Args:
+        db: Database session
+        account_name: Name of the Kalshi account
         
-        Args:
-            api_key_id: Kalshi API key ID (defaults to KALSHI_API_KEY_ID env var)
-            private_key_path: Path to private key file (defaults to KALSHI_PRIVATE_KEY_PATH env var)
-            base_url: Base URL for Kalshi API (demo or production)
-        """
-        self.api_key_id = api_key_id or os.getenv("KALSHI_API_KEY_ID")
-        if not self.api_key_id:
-            raise ValueError("KALSHI_API_KEY_ID must be provided or set as environment variable")
+    Returns:
+        KalshiAccount object
         
-        # Default to kalshi_keys directory if path not provided
-        if private_key_path is None:
-            private_key_path = os.getenv(
-                "KALSHI_PRIVATE_KEY_PATH",
-                str(Path(__file__).parent / "kalshi_keys" / "gemini-demo.txt")
-            )
-        
-        self.private_key_path = private_key_path
-        self.base_url = base_url.rstrip('/')
-        self.private_key = self._load_private_key()
+    Raises:
+        ValueError: If account not found
+    """
+    result = await db.execute(
+        select(KalshiAccount).where(KalshiAccount.account_name == account_name)
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        raise ValueError(f"Kalshi account '{account_name}' not found")
+    return account
+
+
+def _get_secret_from_gcp(gcp_project_id: str, secret_name: str) -> bytes:
+    """
+    Retrieve secret from GCP Secret Manager
     
-    def _load_private_key(self) -> rsa.RSAPrivateKey:
-        """Load the RSA private key from file"""
-        try:
-            with open(self.private_key_path, "rb") as key_file:
-                private_key = serialization.load_pem_private_key(
-                    key_file.read(),
-                    password=None,
-                    backend=default_backend()
-                )
-            return private_key
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Private key file not found at: {self.private_key_path}")
-        except Exception as e:
-            raise ValueError(f"Failed to load private key: {str(e)}")
+    Args:
+        gcp_project_id: GCP project ID
+        secret_name: Secret name in GCP Secret Manager
+        
+    Returns:
+        Secret value as bytes
+    """
+    try:
+        client = secretmanager.SecretManagerServiceClient()
+        
+        # Build the secret version name (using 'latest' version)
+        name = f"projects/{gcp_project_id}/secrets/{secret_name}/versions/latest"
+        
+        # Access the secret version
+        response = client.access_secret_version(request={"name": name})
+        
+        # Return the secret payload
+        return response.payload.data
+    except Exception as e:
+        raise ValueError(f"Failed to retrieve secret from GCP Secret Manager: {str(e)}")
+
+
+def _load_private_key(gcp_project_id: str, secret_name: str) -> rsa.RSAPrivateKey:
+    """
+    Load the RSA private key from GCP Secret Manager
     
-    def _sign_message(self, message: str) -> str:
-        """
-        Sign a message using PSS padding with SHA256
+    Args:
+        gcp_project_id: GCP project ID
+        secret_name: Secret name in GCP Secret Manager
         
-        Args:
-            message: The message string to sign
-            
-        Returns:
-            Base64 encoded signature
-        """
-        message_bytes = message.encode('utf-8')
-        try:
-            signature = self.private_key.sign(
-                message_bytes,
-                padding.PSS(
-                    mgf=padding.MGF1(hashes.SHA256()),
-                    salt_length=padding.PSS.DIGEST_LENGTH
-                ),
-                hashes.SHA256()
-            )
-            return base64.b64encode(signature).decode('utf-8')
-        except InvalidSignature as e:
-            raise ValueError("RSA sign PSS failed") from e
+    Returns:
+        RSA private key
+    """
+    try:
+        # Fetch from GCP Secret Manager
+        key_bytes = _get_secret_from_gcp(gcp_project_id, secret_name)
+        
+        # Load the private key from bytes
+        private_key = serialization.load_pem_private_key(
+            key_bytes,
+            password=None,
+            backend=default_backend()
+        )
+        return private_key
+    except Exception as e:
+        raise ValueError(f"Failed to load private key: {str(e)}")
+
+
+def _sign_message(private_key: rsa.RSAPrivateKey, message: str) -> str:
+    """
+    Sign a message using PSS padding with SHA256
     
-    def _get_headers(self, method: str, path: str) -> dict:
-        """
-        Generate authentication headers for Kalshi API request
+    Args:
+        private_key: RSA private key
+        message: The message string to sign
         
-        Args:
-            method: HTTP method (GET, POST, etc.)
-            path: API endpoint path (without query parameters)
-            
-        Returns:
-            Dictionary of headers
-        """
-        # Strip query parameters from path before signing
-        path_without_query = path.split('?')[0]
+    Returns:
+        Base64 encoded signature
+    """
+    message_bytes = message.encode('utf-8')
+    try:
+        signature = private_key.sign(
+            message_bytes,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.DIGEST_LENGTH
+            ),
+            hashes.SHA256()
+        )
+        return base64.b64encode(signature).decode('utf-8')
+    except InvalidSignature as e:
+        raise ValueError("RSA sign PSS failed") from e
+
+
+def _get_headers(private_key: rsa.RSAPrivateKey, api_key_id: str, method: str, path: str) -> dict:
+    """
+    Generate authentication headers for Kalshi API request
+    
+    Args:
+        private_key: RSA private key
+        api_key_id: Kalshi API key ID
+        method: HTTP method (GET, POST, etc.)
+        path: API endpoint path (without query parameters)
         
-        # Get current timestamp in milliseconds
-        current_time = datetime.datetime.now()
-        timestamp_ms = int(current_time.timestamp() * 1000)
-        timestamp_str = str(timestamp_ms)
+    Returns:
+        Dictionary of headers
+    """
+    # Strip query parameters from path before signing
+    path_without_query = path.split('?')[0]
+    
+    # Get current timestamp in milliseconds
+    current_time = datetime.datetime.now()
+    timestamp_ms = int(current_time.timestamp() * 1000)
+    timestamp_str = str(timestamp_ms)
+    
+    # Create message to sign: timestamp + method + path
+    message = timestamp_str + method + path_without_query
+    signature = _sign_message(private_key, message)
+    
+    return {
+        'KALSHI-ACCESS-KEY': api_key_id,
+        'KALSHI-ACCESS-SIGNATURE': signature,
+        'KALSHI-ACCESS-TIMESTAMP': timestamp_str
+    }
+
+
+async def get_kalshi_account_balance(db: AsyncSession, account_name: str) -> dict:
+    """
+    Get account balance from Kalshi API
+    
+    Args:
+        db: Database session
+        account_name: Name of the Kalshi account
         
-        # Create message to sign: timestamp + method + path
-        message = timestamp_str + method + path_without_query
-        signature = self._sign_message(message)
+    Returns:
+        Dictionary containing balance information
         
-        return {
-            'KALSHI-ACCESS-KEY': self.api_key_id,
-            'KALSHI-ACCESS-SIGNATURE': signature,
-            'KALSHI-ACCESS-TIMESTAMP': timestamp_str
+    Example response:
+        {
+            "balance": 10000,
+            "portfolio_value": 5000,
+            "updated_ts": 1702500000000
         }
+    """
+    # Get account credentials from database
+    account = await _get_kalshi_account(db, account_name)
     
-    async def get_balance(self) -> dict:
-        """
-        Get account balance from Kalshi API
-        
-        Returns:
-            Dictionary containing balance information
-            
-        Example response:
-            {
-                "balance": 10000,
-                "portfolio_value": 5000,
-                "updated_ts": 1702500000000
-            }
-        """
-        path = '/trade-api/v2/portfolio/balance'
-        method = 'GET'
-        headers = self._get_headers(method, path)
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.base_url}{path}",
-                headers=headers
-            )
-            response.raise_for_status()
-            return response.json()
+    # Get GCP project ID from environment
+    gcp_project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+    if not gcp_project_id:
+        raise ValueError("GOOGLE_CLOUD_PROJECT environment variable must be set")
     
-    async def get_portfolio(self) -> dict:
-        """
-        Get full portfolio information including positions
-        
-        Returns:
-            Dictionary containing portfolio information
-        """
-        path = '/trade-api/v2/portfolio'
-        method = 'GET'
-        headers = self._get_headers(method, path)
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.base_url}{path}",
-                headers=headers
-            )
-            response.raise_for_status()
-            return response.json()
+    # Load private key
+    private_key = _load_private_key(gcp_project_id, account.secret_name)
+    
+    # Determine base URL based on is_demo flag
+    base_url = "https://demo-api.kalshi.co" if account.is_demo else "https://api.elections.kalshi.com"
+    
+    # Make API request
+    path = '/trade-api/v2/portfolio/balance'
+    method = 'GET'
+    headers = _get_headers(private_key, account.key_id, method, path)
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{base_url}{path}",
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
 
 
-# Response Models
+async def get_portfolio(db: AsyncSession, account_name: str) -> dict:
+    """
+    Get full portfolio information including positions
+    
+    Args:
+        db: Database session
+        account_name: Name of the Kalshi account
+        
+    Returns:
+        Dictionary containing portfolio information
+    """
+    # Get account credentials from database
+    account = await _get_kalshi_account(db, account_name)
+    
+    # Get GCP project ID from environment
+    gcp_project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+    if not gcp_project_id:
+        raise ValueError("GOOGLE_CLOUD_PROJECT environment variable must be set")
+    
+    # Load private key
+    private_key = _load_private_key(gcp_project_id, account.secret_name)
+    
+    # Determine base URL based on is_demo flag
+    base_url = "https://demo-api.kalshi.co" if account.is_demo else "https://api.kalshi.co"
+    
+    # Make API request
+    path = '/trade-api/v2/portfolio'
+    method = 'GET'
+    headers = _get_headers(private_key, account.key_id, method, path)
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{base_url}{path}",
+            headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+# Request/Response Models
+class CreateKalshiAccountRequest(BaseModel):
+    """Request model for creating a Kalshi account"""
+    account_name: str
+    key_id: str
+    secret_name: str
+    is_demo: bool = False
+
+
+class CreateKalshiAccountResponse(BaseModel):
+    """Response model for creating a Kalshi account"""
+    account_id: str
+    account_name: str
+    key_id: str
+    secret_name: str
+    is_demo: bool
+
+
 class GetKalshiBalanceResponse(BaseModel):
     """Response model for Kalshi balance endpoint"""
     balance: int  # Member's available balance in cents
@@ -165,40 +258,47 @@ class GetKalshiBalanceResponse(BaseModel):
     updated_ts: int  # Unix timestamp of the last update
 
 
-# Convenience function for quick balance checks
-async def get_account_balance(
-    api_key_id: Optional[str] = None,
-    private_key_path: Optional[str] = None,
-    base_url: str = "https://demo-api.kalshi.co"
-) -> dict:
+async def create_kalshi_account_handler(
+    request: CreateKalshiAccountRequest, db: AsyncSession
+) -> CreateKalshiAccountResponse:
     """
-    Convenience function to get account balance
+    Create a new Kalshi account
     
     Args:
-        api_key_id: Kalshi API key ID (defaults to KALSHI_API_KEY_ID env var)
-        private_key_path: Path to private key file (defaults to KALSHI_PRIVATE_KEY_PATH env var)
-        base_url: Base URL for Kalshi API
+        request: CreateKalshiAccountRequest with account details
+        db: Database session
         
     Returns:
-        Dictionary containing balance information
+        CreateKalshiAccountResponse with created account details
+        
+    Raises:
+        ValueError: If account name already exists
     """
-    client = KalshiClient(
-        api_key_id=api_key_id,
-        private_key_path=private_key_path,
-        base_url=base_url
+    # Check if account name already exists
+    result = await db.execute(
+        select(KalshiAccount).where(KalshiAccount.account_name == request.account_name)
     )
-    return await client.get_balance()
-
-
-# Handler for FastAPI endpoint
-async def get_kalshi_balance_handler() -> GetKalshiBalanceResponse:
-    """
-    Handler to get Kalshi account balance
+    existing_account = result.scalar_one_or_none()
+    if existing_account:
+        raise ValueError(f"Kalshi account with name '{request.account_name}' already exists")
     
-    Returns:
-        GetKalshiBalanceResponse with balance, portfolio_value, and updated_ts
-    """
-    client = KalshiClient()
-    balance_data = await client.get_balance()
-    return GetKalshiBalanceResponse(**balance_data)
+    # Create new account
+    new_account = KalshiAccount(
+        account_name=request.account_name,
+        key_id=request.key_id,
+        secret_name=request.secret_name,
+        is_demo=request.is_demo,
+    )
+    
+    db.add(new_account)
+    await db.commit()
+    await db.refresh(new_account)
+    
+    return CreateKalshiAccountResponse(
+        account_id=str(new_account.account_id),
+        account_name=new_account.account_name,
+        key_id=new_account.key_id,
+        secret_name=new_account.secret_name,
+        is_demo=new_account.is_demo,
+    )
 
