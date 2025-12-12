@@ -35,9 +35,11 @@ from account_utils import (
 from kalshi_utils import (
     CreateKalshiAccountRequest,
     CreateKalshiAccountResponse,
+    GetKalshiAccountPositionsResponse,
     GetKalshiBalanceResponse,
     create_kalshi_account_handler,
     get_kalshi_account_balance,
+    get_kalshi_account_positions,
 )
 from database import close_db, get_db, init_db
 from models.account import Base
@@ -362,3 +364,28 @@ async def get_kalshi_balance(
     balance_data = await get_kalshi_account_balance(db, account_name)
     return GetKalshiBalanceResponse(**balance_data)
 
+
+@app.get("/kalshi/positions", response_model=GetKalshiAccountPositionsResponse)
+async def get_kalshi_positions(
+    account_name: str, db: AsyncSession = Depends(get_db)
+) -> GetKalshiAccountPositionsResponse:
+    """
+    Get all positions for a Kalshi account from the Kalshi API.
+    
+    This endpoint retrieves all positions (market and event level) for a Kalshi account:
+    - account_name: Name of the Kalshi account to query positions for
+    
+    The endpoint will:
+    1. Look up the Kalshi account credentials in the database
+    2. Connect to the appropriate Kalshi API (demo or production based on is_demo flag)
+    3. Automatically handle pagination to retrieve all positions
+    4. Filter to only positions with non-zero position values
+    
+    Returns:
+    - market_positions: List of all market-level positions with details including:
+      - ticker, position size, total traded, market exposure, realized P&L, fees paid
+    - event_positions: List of all event-level positions with details including:
+      - event ticker, total cost, event exposure, realized P&L, fees paid
+    """
+    positions_data = await get_kalshi_account_positions(db, account_name)
+    return GetKalshiAccountPositionsResponse(**positions_data)

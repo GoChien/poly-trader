@@ -194,16 +194,18 @@ async def get_kalshi_account_balance(db: AsyncSession, account_name: str) -> dic
         return response.json()
 
 
-async def get_portfolio(db: AsyncSession, account_name: str) -> dict:
+async def get_kalshi_account_positions(db: AsyncSession, account_name: str) -> dict:
     """
-    Get full portfolio information including positions
+    Get all portfolio positions, automatically handling pagination
     
     Args:
         db: Database session
         account_name: Name of the Kalshi account
         
     Returns:
-        Dictionary containing portfolio information
+        Dictionary containing:
+            - market_positions: Complete list of all market positions
+            - event_positions: Complete list of all event positions
     """
     # Get account credentials from database
     account = await _get_kalshi_account(db, account_name)
@@ -217,20 +219,49 @@ async def get_portfolio(db: AsyncSession, account_name: str) -> dict:
     private_key = _load_private_key(gcp_project_id, account.secret_name)
     
     # Determine base URL based on is_demo flag
-    base_url = "https://demo-api.kalshi.co" if account.is_demo else "https://api.kalshi.co"
+    base_url = "https://demo-api.kalshi.co" if account.is_demo else "https://api.elections.kalshi.com"
     
-    # Make API request
-    path = '/trade-api/v2/portfolio'
+    # Use correct positions endpoint
+    path = '/trade-api/v2/portfolio/positions'
     method = 'GET'
-    headers = _get_headers(private_key, account.key_id, method, path)
+    
+    # Collect all positions across pages
+    all_market_positions = []
+    all_event_positions = []
+    cursor = None
     
     async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{base_url}{path}",
-            headers=headers
-        )
-        response.raise_for_status()
-        return response.json()
+        while True:
+            # Build request parameters
+            params = {
+                'limit': 1000,  # Use max limit for efficiency
+                'count_filter': 'position'  # Only get positions with non-zero position
+            }
+            if cursor:
+                params['cursor'] = cursor
+            
+            headers = _get_headers(private_key, account.key_id, method, path)
+            response = await client.get(
+                f"{base_url}{path}",
+                headers=headers,
+                params=params
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            # Accumulate positions
+            all_market_positions.extend(data.get('market_positions', []))
+            all_event_positions.extend(data.get('event_positions', []))
+            
+            # Check for more pages
+            cursor = data.get('cursor')
+            if not cursor:
+                break
+    
+    return {
+        'market_positions': all_market_positions,
+        'event_positions': all_event_positions
+    }
 
 
 # Request/Response Models
@@ -256,6 +287,42 @@ class GetKalshiBalanceResponse(BaseModel):
     balance: int  # Member's available balance in cents
     portfolio_value: int  # Member's portfolio value in cents
     updated_ts: int  # Unix timestamp of the last update
+
+
+class MarketPosition(BaseModel):
+    """Model for a single market position"""
+    ticker: str
+    total_traded: int
+    total_traded_dollars: str
+    position: int
+    market_exposure: int
+    market_exposure_dollars: str
+    realized_pnl: int
+    realized_pnl_dollars: str
+    resting_orders_count: int
+    fees_paid: int
+    fees_paid_dollars: str
+    last_updated_ts: str | None = None
+
+
+class EventPosition(BaseModel):
+    """Model for a single event position"""
+    event_ticker: str
+    total_cost: int
+    total_cost_dollars: str
+    total_cost_shares: int
+    event_exposure: int
+    event_exposure_dollars: str
+    realized_pnl: int
+    realized_pnl_dollars: str
+    fees_paid: int
+    fees_paid_dollars: str
+
+
+class GetKalshiAccountPositionsResponse(BaseModel):
+    """Response model for Kalshi account positions endpoint"""
+    market_positions: list[MarketPosition]
+    event_positions: list[EventPosition]
 
 
 async def create_kalshi_account_handler(
