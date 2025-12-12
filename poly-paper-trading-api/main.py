@@ -4,7 +4,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Configure logging
@@ -37,13 +37,17 @@ from kalshi_utils import (
     CreateKalshiAccountResponse,
     GetKalshiAccountPositionsResponse,
     GetKalshiBalanceResponse,
+    GetKalshiMarketsResponse,
+    KalshiMarketResponse,
     create_kalshi_account_handler,
     get_kalshi_account_balance,
     get_kalshi_account_positions,
+    get_kalshi_markets,
 )
 from database import close_db, get_db, init_db
 from models.account import Base
 from models.kalshi_account import KalshiAccount  # noqa: F401 - imported for table creation
+from models.kalshi_market import KalshiMarket  # noqa: F401 - imported for table creation
 from models.strategy import Strategy  # noqa: F401 - imported for table creation
 from order_utils import (
     CancelOrderResponse,
@@ -389,3 +393,36 @@ async def get_kalshi_positions(
     """
     positions_data = await get_kalshi_account_positions(db, account_name)
     return GetKalshiAccountPositionsResponse(**positions_data)
+
+
+@app.get("/kalshi/markets", response_model=GetKalshiMarketsResponse)
+async def get_markets(
+    exclude_tickers: list[str] = Query(default=None, description="List of ticker symbols to exclude from results"),
+    db: AsyncSession = Depends(get_db)
+) -> GetKalshiMarketsResponse:
+    """
+    Get all Kalshi markets with latest data from the Kalshi API (public endpoint), with optional filtering.
+    
+    This endpoint:
+    1. Queries the database to get filtered market tickers (applying exclude_tickers filter)
+    2. Fetches the most up-to-date market data from the Kalshi public API for those tickers
+    3. Returns fresh market data to avoid database latency issues
+    
+    Note: This uses the public Kalshi markets endpoint which does not require authentication.
+    
+    Parameters:
+    - exclude_tickers: Optional list of ticker symbols to exclude from the results
+    
+    Query parameter examples:
+    - /kalshi/markets - Get all markets with latest data
+    - /kalshi/markets?exclude_tickers=TICKER1&exclude_tickers=TICKER2 - Exclude specific tickers
+    
+    Returns:
+    - markets: List of market objects with latest data from Kalshi API
+    - total_count: Total number of markets returned (after filtering)
+    """
+    markets_data = await get_kalshi_markets(db, exclude_tickers=exclude_tickers)
+    return GetKalshiMarketsResponse(
+        markets=[KalshiMarketResponse(**m) for m in markets_data['markets']],
+        total_count=markets_data['total_count']
+    )

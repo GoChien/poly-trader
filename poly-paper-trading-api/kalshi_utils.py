@@ -13,6 +13,7 @@ from cryptography.exceptions import InvalidSignature
 from google.cloud import secretmanager
 
 from models.kalshi_account import KalshiAccount
+from models.kalshi_market import KalshiMarket
 
 
 async def _get_kalshi_account(db: AsyncSession, account_name: str) -> KalshiAccount:
@@ -323,6 +324,146 @@ class GetKalshiAccountPositionsResponse(BaseModel):
     """Response model for Kalshi account positions endpoint"""
     market_positions: list[MarketPosition]
     event_positions: list[EventPosition]
+
+
+class KalshiMarketResponse(BaseModel):
+    """Response model for Kalshi market data from API"""
+    ticker: str
+    event_ticker: str
+    title: str
+    subtitle: str
+    status: str
+    volume: int
+    volume_24h: int
+    liquidity: int
+    yes_bid: int
+    yes_ask: int
+    no_bid: int
+    no_ask: int
+    yes_bid_dollars: str
+    yes_ask_dollars: str
+    no_bid_dollars: str
+    no_ask_dollars: str
+    last_price: int
+    open_interest: int
+    close_time: str
+    
+    # Additional fields from API (optional)
+    market_type: Optional[str] = None
+    yes_sub_title: Optional[str] = None
+    no_sub_title: Optional[str] = None
+    created_time: Optional[str] = None
+    open_time: Optional[str] = None
+    expiration_time: Optional[str] = None
+    latest_expiration_time: Optional[str] = None
+    settlement_timer_seconds: Optional[int] = None
+    response_price_units: Optional[str] = None
+    last_price_dollars: Optional[str] = None
+    result: Optional[str] = None
+    can_close_early: Optional[bool] = None
+    notional_value: Optional[int] = None
+    notional_value_dollars: Optional[str] = None
+    previous_yes_bid: Optional[int] = None
+    previous_yes_bid_dollars: Optional[str] = None
+    previous_yes_ask: Optional[int] = None
+    previous_yes_ask_dollars: Optional[str] = None
+    previous_price: Optional[int] = None
+    previous_price_dollars: Optional[str] = None
+    liquidity_dollars: Optional[str] = None
+    expiration_value: Optional[str] = None
+    category: Optional[str] = None
+    risk_limit_cents: Optional[int] = None
+    tick_size: Optional[int] = None
+    rules_primary: Optional[str] = None
+    rules_secondary: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+
+class GetKalshiMarketsResponse(BaseModel):
+    """Response model for get markets endpoint"""
+    markets: list[KalshiMarketResponse]
+    total_count: int
+
+
+async def get_kalshi_markets(
+    db: AsyncSession,
+    exclude_tickers: Optional[list[str]] = None
+) -> dict:
+    """
+    Get all markets with latest data from Kalshi API, with optional filtering to exclude specified tickers.
+    
+    This function:
+    1. Queries the database to get filtered market tickers (applying exclude_tickers filter)
+    2. Uses those tickers to fetch the most up-to-date market data from the Kalshi API (public endpoint, no auth required)
+    3. Returns fresh market data to avoid database latency issues
+    
+    Args:
+        db: Database session
+        exclude_tickers: Optional list of ticker symbols to exclude from results
+        
+    Returns:
+        Dictionary containing:
+            - markets: List of market objects with latest data from Kalshi API
+            - total_count: Total number of markets returned
+            
+    Example:
+        markets_data = await get_kalshi_markets(db, exclude_tickers=["TICKER1", "TICKER2"])
+    """
+    # Step 1: Query database to get filtered markets
+    query = select(KalshiMarket)
+    
+    # Add filter to exclude specific tickers if provided
+    if exclude_tickers:
+        query = query.where(~KalshiMarket.ticker.in_(exclude_tickers))
+    
+    # Execute query to get markets and extract tickers
+    result = await db.execute(query)
+    markets = result.scalars().all()
+    tickers = [market.ticker for market in markets]
+    
+    # If no tickers found, return empty result
+    if not tickers:
+        return {
+            'markets': [],
+            'total_count': 0
+        }
+    
+    # Step 2: Use production API
+    base_url = "https://api.elections.kalshi.com"
+    
+    # Step 3: Fetch fresh data from Kalshi API (public endpoint, no authentication required)
+    path = '/trade-api/v2/markets'
+    
+    all_markets = []
+    
+    # API might have limits on tickers per request, so batch them (100 at a time)
+    batch_size = 100
+    async with httpx.AsyncClient() as client:
+        for i in range(0, len(tickers), batch_size):
+            batch_tickers = tickers[i:i + batch_size]
+            
+            # Build request parameters with comma-separated tickers
+            params = {
+                'tickers': ','.join(batch_tickers)
+            }
+            
+            # No authentication headers needed for public markets endpoint
+            response = await client.get(
+                f"{base_url}{path}",
+                params=params
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            # Accumulate markets from this batch
+            all_markets.extend(data.get('markets', []))
+    
+    return {
+        'markets': all_markets,
+        'total_count': len(all_markets)
+    }
 
 
 async def create_kalshi_account_handler(
