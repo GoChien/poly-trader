@@ -11,7 +11,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import database
-from models.account import Account
+from models.kalshi_account import KalshiAccount
 from models.order import OrderSide
 from models.position import Position
 from models.strategy import Strategy
@@ -19,8 +19,8 @@ from order_utils import get_market_price, PlaceLimitOrderRequest, place_limit_or
 
 
 class CreateStrategyRequest(BaseModel):
-    account_id: uuid.UUID
-    token_id: str
+    account_name: str
+    ticker: str
     thesis: str
     thesis_probability: Decimal
     entry_max_price: Decimal
@@ -36,8 +36,8 @@ class CreateStrategyRequest(BaseModel):
 
 class CreateStrategyResponse(BaseModel):
     strategy_id: str
-    account_id: uuid.UUID
-    token_id: str
+    account_name: str
+    ticker: str
     thesis: str
     thesis_probability: Decimal
     entry_max_price: Decimal
@@ -54,8 +54,8 @@ class CreateStrategyResponse(BaseModel):
 
 class StrategyResponse(BaseModel):
     strategy_id: str
-    account_id: uuid.UUID
-    token_id: str
+    account_name: str
+    ticker: str
     thesis: str
     thesis_probability: Decimal
     entry_max_price: Decimal
@@ -99,21 +99,21 @@ async def create_strategy_handler(
     """Create a new trading strategy."""
     try:
         # Verify the account exists
-        stmt = select(Account).where(Account.account_id == request.account_id)
+        stmt = select(KalshiAccount).where(KalshiAccount.account_name == request.account_name)
         result = await db.execute(stmt)
         account = result.scalar_one_or_none()
 
         if not account:
             raise HTTPException(
                 status_code=404,
-                detail=f"Account with id '{request.account_id}' not found"
+                detail=f"Account with name '{request.account_name}' not found"
             )
 
-        # Check if there's already an active strategy for this account and token
+        # Check if there's already an active strategy for this account and ticker
         now = datetime.now(timezone.utc)
         stmt = select(Strategy).where(
-            Strategy.account_id == request.account_id,
-            Strategy.token_id == request.token_id,
+            Strategy.account_name == request.account_name,
+            Strategy.ticker == request.ticker,
             or_(
                 Strategy.valid_until_utc > now,
                 Strategy.valid_until_utc.is_(None),
@@ -125,7 +125,7 @@ async def create_strategy_handler(
         if existing_strategy:
             raise HTTPException(
                 status_code=409,
-                detail=f"Account already has an active strategy for token '{request.token_id}'"
+                detail=f"Account already has an active strategy for ticker '{request.ticker}'"
             )
 
         # Generate strategy ID
@@ -134,8 +134,8 @@ async def create_strategy_handler(
         # Create new strategy
         strategy = Strategy(
             strategy_id=strategy_id,
-            account_id=request.account_id,
-            token_id=request.token_id,
+            account_name=request.account_name,
+            ticker=request.ticker,
             thesis=request.thesis,
             thesis_probability=request.thesis_probability,
             entry_max_price=request.entry_max_price,
@@ -154,8 +154,8 @@ async def create_strategy_handler(
 
         return CreateStrategyResponse(
             strategy_id=strategy.strategy_id,
-            account_id=strategy.account_id,
-            token_id=strategy.token_id,
+            account_name=strategy.account_name,
+            ticker=strategy.ticker,
             thesis=strategy.thesis,
             thesis_probability=strategy.thesis_probability,
             entry_max_price=strategy.entry_max_price,
@@ -186,7 +186,7 @@ async def get_active_strategies_handler(
     """Get all active strategies for an account (valid_until_utc > now or null)."""
     try:
         # Find the account by name
-        stmt = select(Account).where(Account.account_name == account_name)
+        stmt = select(KalshiAccount).where(KalshiAccount.account_name == account_name)
         result = await db.execute(stmt)
         account = result.scalar_one_or_none()
 
@@ -201,7 +201,7 @@ async def get_active_strategies_handler(
         stmt = (
             select(Strategy)
             .where(
-                Strategy.account_id == account.account_id,
+                Strategy.account_name == account_name,
                 or_(
                     Strategy.valid_until_utc > now,
                     Strategy.valid_until_utc.is_(None),
@@ -217,8 +217,8 @@ async def get_active_strategies_handler(
             strategies=[
                 StrategyResponse(
                     strategy_id=s.strategy_id,
-                    account_id=s.account_id,
-                    token_id=s.token_id,
+                    account_name=s.account_name,
+                    ticker=s.ticker,
                     thesis=s.thesis,
                     thesis_probability=s.thesis_probability,
                     entry_max_price=s.entry_max_price,
@@ -286,8 +286,8 @@ async def update_strategy_handler(
         # Create new strategy with updated values (use old values as defaults)
         new_strategy = Strategy(
             strategy_id=new_strategy_id,
-            account_id=old_strategy.account_id,
-            token_id=old_strategy.token_id,
+            account_name=old_strategy.account_name,
+            ticker=old_strategy.ticker,
             thesis=request.thesis if request.thesis is not None else old_strategy.thesis,
             thesis_probability=(
                 request.thesis_probability
@@ -333,8 +333,8 @@ async def update_strategy_handler(
             old_strategy_id=request.strategy_id,
             new_strategy=StrategyResponse(
                 strategy_id=new_strategy.strategy_id,
-                account_id=new_strategy.account_id,
-                token_id=new_strategy.token_id,
+                account_name=new_strategy.account_name,
+                ticker=new_strategy.ticker,
                 thesis=new_strategy.thesis,
                 thesis_probability=new_strategy.thesis_probability,
                 entry_max_price=new_strategy.entry_max_price,
@@ -363,7 +363,7 @@ async def update_strategy_handler(
 
 class ProcessStrategyResult(BaseModel):
     strategy_id: str
-    token_id: str
+    ticker: str
     action: str  # "buy", "sell_take_profit", "sell_stop_loss", "hold", "skip"
     reason: str
     order_size: Optional[int] = None
@@ -392,13 +392,24 @@ async def process_strategy_handler(
     """
     try:
         # 1. Get market prices (both bid and ask)
-        ask_price = await get_market_price(strategy.token_id, OrderSide.BUY)  # Ask price for buying
-        bid_price = await get_market_price(strategy.token_id, OrderSide.SELL)  # Bid price for selling
+        ask_price = await get_market_price(strategy.ticker, OrderSide.BUY)  # Ask price for buying
+        bid_price = await get_market_price(strategy.ticker, OrderSide.SELL)  # Bid price for selling
         
-        # 2. Get existing position for this token under this account
+        # 2. Get existing position for this ticker under this account
+        # First, get the account_id from account_name
+        stmt = select(KalshiAccount).where(KalshiAccount.account_name == strategy.account_name)
+        result = await db.execute(stmt)
+        account = result.scalar_one_or_none()
+        
+        if not account:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Account with name '{strategy.account_name}' not found"
+            )
+        
         stmt = select(Position).where(
-            Position.account_id == strategy.account_id,
-            Position.token_id == strategy.token_id,
+            Position.account_id == account.account_id,
+            Position.token_id == strategy.ticker,
         )
         result = await db.execute(stmt)
         position = result.scalar_one_or_none()
@@ -411,17 +422,17 @@ async def process_strategy_handler(
             if bid_price >= strategy.exit_take_profit_price:
                 # Place sell order for all shares at bid price
                 order_request = PlaceLimitOrderRequest(
-                    account_id=strategy.account_id,
+                    account_id=account.account_id,
                     price=bid_price,
                     size=position.shares,
                     side=OrderSide.SELL,
-                    token_id=strategy.token_id,
+                    token_id=strategy.ticker,
                 )
                 await place_limit_order_handler(order_request, db)
                 
                 return ProcessStrategyResult(
                     strategy_id=strategy.strategy_id,
-                    token_id=strategy.token_id,
+                    ticker=strategy.ticker,
                     action="sell_take_profit",
                     reason=f"Take profit triggered: bid price {bid_price} >= target {strategy.exit_take_profit_price}",
                     order_size=position.shares,
@@ -434,17 +445,17 @@ async def process_strategy_handler(
             if bid_price <= strategy.exit_stop_loss_price:
                 # Place sell order for all shares at bid price
                 order_request = PlaceLimitOrderRequest(
-                    account_id=strategy.account_id,
+                    account_id=account.account_id,
                     price=bid_price,
                     size=position.shares,
                     side=OrderSide.SELL,
-                    token_id=strategy.token_id,
+                    token_id=strategy.ticker,
                 )
                 await place_limit_order_handler(order_request, db)
                 
                 return ProcessStrategyResult(
                     strategy_id=strategy.strategy_id,
-                    token_id=strategy.token_id,
+                    ticker=strategy.ticker,
                     action="sell_stop_loss",
                     reason=f"Stop loss triggered: bid price {bid_price} <= stop loss {strategy.exit_stop_loss_price}",
                     order_size=position.shares,
@@ -456,7 +467,7 @@ async def process_strategy_handler(
             # Otherwise, keep holding
             return ProcessStrategyResult(
                 strategy_id=strategy.strategy_id,
-                token_id=strategy.token_id,
+                ticker=strategy.ticker,
                 action="hold",
                 reason=f"Holding position: bid price {bid_price} within range (stop loss: {strategy.exit_stop_loss_price}, take profit: {strategy.exit_take_profit_price})",
                 current_bid_price=bid_price,
@@ -468,7 +479,7 @@ async def process_strategy_handler(
         if ask_price > strategy.entry_max_price:
             return ProcessStrategyResult(
                 strategy_id=strategy.strategy_id,
-                token_id=strategy.token_id,
+                ticker=strategy.ticker,
                 action="skip",
                 reason=f"Price too high: ask price {ask_price} > max entry price {strategy.entry_max_price}",
                 current_bid_price=bid_price,
@@ -481,7 +492,7 @@ async def process_strategy_handler(
         if edge < strategy.entry_min_implied_edge:
             return ProcessStrategyResult(
                 strategy_id=strategy.strategy_id,
-                token_id=strategy.token_id,
+                ticker=strategy.ticker,
                 action="skip",
                 reason=f"Edge too low: edge {edge} < min edge {strategy.entry_min_implied_edge}",
                 current_bid_price=bid_price,
@@ -495,7 +506,7 @@ async def process_strategy_handler(
         if size <= 0:
             return ProcessStrategyResult(
                 strategy_id=strategy.strategy_id,
-                token_id=strategy.token_id,
+                ticker=strategy.ticker,
                 action="skip",
                 reason=f"Calculated size is 0: max_capital_risk={strategy.entry_max_capital_risk}, ask_price={ask_price}",
                 current_bid_price=bid_price,
@@ -504,17 +515,17 @@ async def process_strategy_handler(
         
         # Place buy order
         order_request = PlaceLimitOrderRequest(
-            account_id=strategy.account_id,
+            account_id=account.account_id,
             price=ask_price,
             size=size,
             side=OrderSide.BUY,
-            token_id=strategy.token_id,
+            token_id=strategy.ticker,
         )
         await place_limit_order_handler(order_request, db)
         
         return ProcessStrategyResult(
             strategy_id=strategy.strategy_id,
-            token_id=strategy.token_id,
+            ticker=strategy.ticker,
             action="buy",
             reason=f"Entry conditions met: edge {edge} >= min edge {strategy.entry_min_implied_edge}, price {ask_price} <= max {strategy.entry_max_price}",
             order_size=size,
@@ -550,7 +561,7 @@ async def process_strategies_handler(
     """
     try:
         # Find the account by name
-        stmt = select(Account).where(Account.account_name == account_name)
+        stmt = select(KalshiAccount).where(KalshiAccount.account_name == account_name)
         result = await db.execute(stmt)
         account = result.scalar_one_or_none()
 
@@ -565,7 +576,7 @@ async def process_strategies_handler(
         stmt = (
             select(Strategy)
             .where(
-                Strategy.account_id == account.account_id,
+                Strategy.account_name == account_name,
                 or_(
                     Strategy.valid_until_utc > now,
                     Strategy.valid_until_utc.is_(None),
@@ -599,7 +610,7 @@ async def process_strategies_handler(
                 processed_results.append(
                     ProcessStrategyResult(
                         strategy_id=strategies[i].strategy_id,
-                        token_id=strategies[i].token_id,
+                        ticker=strategies[i].ticker,
                         action="error",
                         reason=str(result),
                     )

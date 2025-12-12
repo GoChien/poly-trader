@@ -1,10 +1,8 @@
-import uuid
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import DateTime, Integer, Numeric, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .account import Base
@@ -18,11 +16,11 @@ class Strategy(Base):
         String(255), primary_key=True
     )
 
-    # Account and token
-    account_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False, index=True
+    # Account and ticker
+    account_name: Mapped[str] = mapped_column(
+        String(255), nullable=False, index=True
     )
-    token_id: Mapped[str] = mapped_column(
+    ticker: Mapped[str] = mapped_column(
         String(255), nullable=False, index=True
     )
 
