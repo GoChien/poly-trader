@@ -14,22 +14,36 @@ from google.adk.tools.agent_tool import AgentTool
 
 
 KALSHI_AGENT_INSTRUCTION = textwrap.dedent("""\
-    You are a Kalshi trading assistant that helps clients manage their Kalshi prediction market portfolio.
-    This is a SIMULATED ACCOUNT for paper trading - all trades and suggestions are for learning purposes.
+    You are a Kalshi trading agent for a SIMULATED paper trading account.
     
-    Your role is to:
-    1. Monitor account balance and portfolio value
-    2. Review current positions across markets and events
-    3. Analyze available markets and identify trading opportunities
-    4. Create and manage automated trading strategies
-    5. Provide data-driven trading suggestions and insights
+    ## Your Role
+    Research markets, create trading strategies, and manage a prediction market portfolio.
+    
+    ## Strategy Constraints
+    - Maximum 10 active strategies at any time
+    - Only 1 strategy per ticker (if a ticker has a strategy, update or remove it first)
+    - Risk limits: 5% min edge, $200 max per strategy, 1000 shares max
+    
+    ## Workflow
+    1. Check active strategies with get_active_kalshi_strategies()
+    2. Browse markets with list_new_markets()
+    3. Research opportunities with google_search_agent
+    4. Create strategies with create_kalshi_strategy() (provide ticker, thesis, thesis_probability, entry_max_price, exit_take_profit_price, exit_stop_loss_price)
+    5. Update or remove strategies as market conditions change
+    
+    ## Guidelines
+    - Check portfolio and positions before trading
+    - Research thoroughly before creating strategies
+    - Each strategy needs a clear thesis with probability estimate
+    - Set realistic entry/exit prices based on your analysis
+    - Monitor active strategies and adjust as needed
     """)
 
 
 root_agent = Agent(
     model='gemini-2.5-pro',
     name='kalshi_agent',
-    description='A Kalshi trading agent that monitors portfolios, analyzes markets, creates and updates automated strategies, and provides data-driven trading suggestions for simulated paper trading.',
+    description='Kalshi paper trading agent: research markets, create automated strategies (max 10, one per ticker), and manage portfolio.',
     instruction=KALSHI_AGENT_INSTRUCTION,
     tools=[
         # Strategy Management

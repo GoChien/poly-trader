@@ -310,7 +310,7 @@ async def create_kalshi_strategy(
 
 
 async def get_active_kalshi_strategies() -> dict:
-    """Get all active strategies for the Kalshi account.
+    """Get all active strategies for the Kalshi account with current market data.
     
     This tool retrieves all active trading strategies for your Kalshi account.
     A strategy is considered active if:
@@ -320,10 +320,14 @@ async def get_active_kalshi_strategies() -> dict:
     Active strategies are being monitored and will automatically execute trades
     based on their entry/exit conditions.
     
+    IMPORTANT: This now includes real-time market data for each strategy, allowing you to
+    see current prices and calculate the edge.
+    
     Returns:
         dict: A dictionary containing:
             - account_name (str): The account name
             - strategies (list[dict]): List of active strategy objects with:
+                Strategy fields:
                 - strategy_id (str): Unique strategy ID
                 - account_name (str): Account name
                 - ticker (str): Market ticker
@@ -340,17 +344,32 @@ async def get_active_kalshi_strategies() -> dict:
                 - notes (Optional[str]): Additional notes
                 - created_at (str): Strategy creation timestamp
                 - updated_at (str): Last update timestamp
+                
+                Current market data fields:
+                - current_yes_bid (Optional[float]): Current YES bid price (0.0-1.0)
+                - current_yes_ask (Optional[float]): Current YES ask price (0.0-1.0)
+                - current_no_bid (Optional[float]): Current NO bid price (0.0-1.0)
+                - current_no_ask (Optional[float]): Current NO ask price (0.0-1.0)
+                - market_status (Optional[str]): Market status (open, closed, settled, etc.)
+                - market_close_time (Optional[str]): Market close time (ISO format)
+                - market_expected_expiration_time (Optional[str]): Expected settlement (ISO format)
+                
+                Calculated fields:
+                - current_edge (Optional[float]): thesis_probability - current_yes_ask
     
     Raises:
         ValueError: If POLY_PAPER_URL or KALSHI_ACCOUNT_NAME not set in environment
         httpx.HTTPStatusError: If the API request fails
     
     Example:
-        # Get all active strategies
+        # Get all active strategies with market data
         result = await get_active_kalshi_strategies()
         print(f"Found {len(result['strategies'])} active strategies")
         for strategy in result['strategies']:
-            print(f"  - {strategy['ticker']}: {strategy['thesis'][:50]}...")
+            ticker = strategy['ticker']
+            current_ask = strategy.get('current_yes_ask', 'N/A')
+            current_edge = strategy.get('current_edge', 'N/A')
+            print(f"  - {ticker}: Ask ${current_ask}, Edge: {current_edge}")
     """
     poly_paper_url = os.getenv("POLY_PAPER_URL")
     kalshi_account_name = os.getenv("KALSHI_ACCOUNT_NAME")
@@ -370,12 +389,25 @@ async def get_active_kalshi_strategies() -> dict:
     
     # Convert Decimal fields to float for easier consumption in all strategies
     for strategy in data.get("strategies", []):
+        # Strategy fields
         strategy["thesis_probability"] = float(strategy["thesis_probability"])
         strategy["entry_max_price"] = float(strategy["entry_max_price"])
         strategy["entry_min_implied_edge"] = float(strategy["entry_min_implied_edge"])
         strategy["entry_max_capital_risk"] = float(strategy["entry_max_capital_risk"])
         strategy["exit_take_profit_price"] = float(strategy["exit_take_profit_price"])
         strategy["exit_stop_loss_price"] = float(strategy["exit_stop_loss_price"])
+        
+        # Market data fields (convert if present)
+        if strategy.get("current_yes_bid") is not None:
+            strategy["current_yes_bid"] = float(strategy["current_yes_bid"])
+        if strategy.get("current_yes_ask") is not None:
+            strategy["current_yes_ask"] = float(strategy["current_yes_ask"])
+        if strategy.get("current_no_bid") is not None:
+            strategy["current_no_bid"] = float(strategy["current_no_bid"])
+        if strategy.get("current_no_ask") is not None:
+            strategy["current_no_ask"] = float(strategy["current_no_ask"])
+        if strategy.get("current_edge") is not None:
+            strategy["current_edge"] = float(strategy["current_edge"])
     
     return data
 

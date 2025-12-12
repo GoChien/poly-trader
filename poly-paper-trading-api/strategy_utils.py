@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
+import httpx
 from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy import or_, select
@@ -71,9 +72,38 @@ class StrategyResponse(BaseModel):
     updated_at: datetime
 
 
+class StrategyWithMarketDataResponse(BaseModel):
+    strategy_id: str
+    account_name: str
+    ticker: str
+    thesis: str
+    thesis_probability: Decimal
+    entry_max_price: Decimal
+    entry_min_implied_edge: Decimal
+    entry_max_capital_risk: Decimal
+    entry_max_position_shares: int
+    exit_take_profit_price: Decimal
+    exit_stop_loss_price: Decimal
+    exit_time_stop_utc: Optional[datetime] = None
+    valid_until_utc: Optional[datetime] = None
+    notes: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    # Market data fields
+    current_yes_bid: Optional[Decimal] = None
+    current_yes_ask: Optional[Decimal] = None
+    current_no_bid: Optional[Decimal] = None
+    current_no_ask: Optional[Decimal] = None
+    market_status: Optional[str] = None
+    market_close_time: Optional[datetime] = None
+    market_expected_expiration_time: Optional[datetime] = None
+    # Calculated fields
+    current_edge: Optional[Decimal] = None  # thesis_probability - current_yes_ask
+
+
 class GetActiveStrategiesResponse(BaseModel):
     account_name: str
-    strategies: list[StrategyResponse]
+    strategies: list[StrategyWithMarketDataResponse]
 
 
 class UpdateStrategyRequest(BaseModel):
@@ -189,7 +219,7 @@ async def create_strategy_handler(
 async def get_active_strategies_handler(
     account_name: str, db: AsyncSession
 ) -> GetActiveStrategiesResponse:
-    """Get all active strategies for an account (valid_until_utc > now or null)."""
+    """Get all active strategies for an account with current market data."""
     try:
         # Find the account by name
         stmt = select(KalshiAccount).where(KalshiAccount.account_name == account_name)
@@ -218,10 +248,34 @@ async def get_active_strategies_handler(
         result = await db.execute(stmt)
         strategies = result.scalars().all()
 
-        return GetActiveStrategiesResponse(
-            account_name=account_name,
-            strategies=[
-                StrategyResponse(
+        if not strategies:
+            return GetActiveStrategiesResponse(
+                account_name=account_name,
+                strategies=[]
+            )
+
+        # Fetch market data for all tickers
+        tickers = [s.ticker for s in strategies]
+        market_data_map = await _fetch_market_data_for_tickers(tickers)
+
+        # Build response with market data
+        strategies_with_market_data = []
+        for s in strategies:
+            market_data = market_data_map.get(s.ticker, {})
+            
+            # Extract market data fields
+            yes_ask = market_data.get('yes_ask')
+            yes_bid = market_data.get('yes_bid')
+            no_ask = market_data.get('no_ask')
+            no_bid = market_data.get('no_bid')
+            
+            # Calculate current edge if we have yes_ask
+            current_edge = None
+            if yes_ask is not None:
+                current_edge = s.thesis_probability - yes_ask
+            
+            strategies_with_market_data.append(
+                StrategyWithMarketDataResponse(
                     strategy_id=s.strategy_id,
                     account_name=s.account_name,
                     ticker=s.ticker,
@@ -238,9 +292,22 @@ async def get_active_strategies_handler(
                     notes=s.notes,
                     created_at=s.created_at,
                     updated_at=s.updated_at,
+                    # Market data
+                    current_yes_bid=yes_bid,
+                    current_yes_ask=yes_ask,
+                    current_no_bid=no_bid,
+                    current_no_ask=no_ask,
+                    market_status=market_data.get('status'),
+                    market_close_time=market_data.get('close_time'),
+                    market_expected_expiration_time=market_data.get('expected_expiration_time'),
+                    # Calculated fields
+                    current_edge=current_edge,
                 )
-                for s in strategies
-            ],
+            )
+
+        return GetActiveStrategiesResponse(
+            account_name=account_name,
+            strategies=strategies_with_market_data
         )
 
     except HTTPException:
@@ -249,6 +316,67 @@ async def get_active_strategies_handler(
         raise HTTPException(
             status_code=500, detail=f"Failed to get active strategies: {str(e)}"
         )
+
+
+async def _fetch_market_data_for_tickers(tickers: list[str]) -> dict[str, dict]:
+    """
+    Fetch current market data for a list of tickers from Kalshi API.
+    
+    Args:
+        tickers: List of ticker symbols to fetch data for
+        
+    Returns:
+        Dictionary mapping ticker to market data dict with fields:
+        - yes_bid, yes_ask, no_bid, no_ask (as Decimal)
+        - status, close_time, expected_expiration_time
+    """
+    if not tickers:
+        return {}
+    
+    base_url = "https://api.elections.kalshi.com"
+    path = '/trade-api/v2/markets'
+    
+    market_data_map = {}
+    
+    # Batch tickers to avoid URL length limits
+    batch_size = 100
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for i in range(0, len(tickers), batch_size):
+            batch_tickers = tickers[i:i + batch_size]
+            
+            try:
+                params = {'tickers': ','.join(batch_tickers)}
+                response = await client.get(f"{base_url}{path}", params=params)
+                response.raise_for_status()
+                data = response.json()
+                
+                # Process each market and convert prices to Decimal
+                for market in data.get('markets', []):
+                    ticker = market.get('ticker')
+                    if not ticker:
+                        continue
+                    
+                    # Use dollar fields directly from API (no conversion needed)
+                    yes_bid_dollars = market.get('yes_bid_dollars')
+                    yes_ask_dollars = market.get('yes_ask_dollars')
+                    no_bid_dollars = market.get('no_bid_dollars')
+                    no_ask_dollars = market.get('no_ask_dollars')
+                    
+                    market_data_map[ticker] = {
+                        'yes_bid': Decimal(str(yes_bid_dollars)) if yes_bid_dollars is not None else None,
+                        'yes_ask': Decimal(str(yes_ask_dollars)) if yes_ask_dollars is not None else None,
+                        'no_bid': Decimal(str(no_bid_dollars)) if no_bid_dollars is not None else None,
+                        'no_ask': Decimal(str(no_ask_dollars)) if no_ask_dollars is not None else None,
+                        'status': market.get('status'),
+                        'close_time': market.get('close_time'),
+                        'expected_expiration_time': market.get('expected_expiration_time'),
+                    }
+            except Exception as e:
+                # Log error but continue processing other batches
+                print(f"Error fetching market data for batch {i//batch_size}: {str(e)}")
+                continue
+    
+    return market_data_map
 
 
 async def update_strategy_handler(

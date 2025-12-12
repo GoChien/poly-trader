@@ -258,10 +258,17 @@ async def get_active_strategies(
     account_name: str, db: AsyncSession = Depends(get_db)
 ) -> GetActiveStrategiesResponse:
     """
-    Get all active strategies for an account.
+    Get all active strategies for an account with current market data.
     
     A strategy is considered active if valid_until_utc is later than the current time,
     or if valid_until_utc is not set (null).
+    
+    For each strategy, this endpoint also fetches and returns:
+    - Current market prices (yes_bid, yes_ask, no_bid, no_ask)
+    - Market status and timing information
+    - Calculated current edge (thesis_probability - current_yes_ask)
+    
+    This provides a complete view of each strategy's status relative to current market conditions.
     """
     return await get_active_strategies_handler(account_name, db)
 
