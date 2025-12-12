@@ -1,6 +1,8 @@
 import textwrap
 from google.adk.agents.llm_agent import Agent
 from kalshi_strategy_agent.kalshi_tools import get_kalshi_balance, get_kalshi_positions
+from agents.search_agent import google_search_agent
+from google.adk.tools.agent_tool import AgentTool
 
 
 KALSHI_AGENT_INSTRUCTION = textwrap.dedent("""\
@@ -47,8 +49,11 @@ root_agent = Agent(
     description='A Kalshi portfolio monitoring agent that provides insights on account balance and positions.',
     instruction=KALSHI_AGENT_INSTRUCTION,
     tools=[
+        # Portfolio state
         get_kalshi_balance,
         get_kalshi_positions,
+        # Research
+        AgentTool(agent=google_search_agent),
     ],
 )
 
