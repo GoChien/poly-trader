@@ -6,6 +6,7 @@ from kalshi_strategy_agent.kalshi_tools import (
     get_kalshi_balance,
     get_kalshi_positions,
     list_new_markets,
+    update_kalshi_strategy,
 )
 from agents.search_agent import google_search_agent
 from google.adk.tools.agent_tool import AgentTool
@@ -40,6 +41,13 @@ KALSHI_AGENT_INSTRUCTION = textwrap.dedent("""\
       - Strategy will automatically execute trades based on your defined conditions
       - IMPORTANT: Only one active strategy per ticker is allowed
     
+    - update_kalshi_strategy(): Update an existing strategy (immutable pattern)
+      - Required: strategy_id
+      - Optional: thesis, thesis_probability, entry_max_price, exit_take_profit_price, exit_stop_loss_price, exit_time_stop_utc, valid_until_utc, notes
+      - Expires the old strategy and creates a new one with updated values
+      - Returns both old_strategy_id and the new_strategy
+      - Use this to adjust entry/exit prices, update thesis, or modify conditions based on new information
+    
     ### Market Research
     - list_new_markets(exclude_tickers=[]): Browse available Kalshi markets with current prices
       - Can exclude specific tickers you've already analyzed
@@ -65,6 +73,7 @@ KALSHI_AGENT_INSTRUCTION = textwrap.dedent("""\
     When asked to find opportunities or analyze markets:
     1. Call get_active_kalshi_strategies() to check existing strategies
        - Avoid creating duplicate strategies for the same ticker
+       - If you want to adjust an existing strategy, use update_kalshi_strategy()
     2. Call list_new_markets() to see available markets
        - You can exclude tickers you've already reviewed or have strategies for
        - Focus on markets with clear yes/no outcomes and reasonable pricing
@@ -79,6 +88,15 @@ KALSHI_AGENT_INSTRUCTION = textwrap.dedent("""\
        - Define clear entry/exit conditions based on your analysis
        - Explain your thesis thoroughly with supporting research
        - Set realistic take profit and stop loss levels
+    
+    ### Strategy Updates
+    When market conditions change or you gain new information:
+    1. Use get_active_kalshi_strategies() to find the strategy to update
+    2. Use update_kalshi_strategy() to adjust the strategy:
+       - Update take profit/stop loss based on new price action
+       - Revise thesis or probability estimate based on new research
+       - Adjust entry price if market conditions changed
+       - Add notes explaining the reason for the update
     
     ## Trading Analysis Guidelines
     
@@ -107,12 +125,13 @@ KALSHI_AGENT_INSTRUCTION = textwrap.dedent("""\
 root_agent = Agent(
     model='gemini-2.5-pro',
     name='kalshi_agent',
-    description='A Kalshi trading agent that monitors portfolios, analyzes markets, creates automated strategies, and provides data-driven trading suggestions for simulated paper trading.',
+    description='A Kalshi trading agent that monitors portfolios, analyzes markets, creates and updates automated strategies, and provides data-driven trading suggestions for simulated paper trading.',
     instruction=KALSHI_AGENT_INSTRUCTION,
     tools=[
         # Strategy Management
         get_active_kalshi_strategies,
         create_kalshi_strategy,
+        update_kalshi_strategy,
         # Portfolio state
         get_kalshi_balance,
         get_kalshi_positions,

@@ -379,3 +379,119 @@ async def get_active_kalshi_strategies() -> dict:
     
     return data
 
+
+async def update_kalshi_strategy(
+    strategy_id: str,
+    thesis: Optional[str] = None,
+    thesis_probability: Optional[float] = None,
+    entry_max_price: Optional[float] = None,
+    exit_take_profit_price: Optional[float] = None,
+    exit_stop_loss_price: Optional[float] = None,
+    exit_time_stop_utc: Optional[str] = None,
+    valid_until_utc: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> dict:
+    """Update an existing trading strategy using an immutable update pattern.
+    
+    This tool updates a strategy by:
+    1. Finding the existing strategy by strategy_id
+    2. Expiring it (setting valid_until_utc to now)
+    3. Creating a new strategy with updated values and a new strategy_id
+    
+    This immutable pattern preserves the history of strategy changes.
+    Only provide the fields you want to update - unchanged fields will be
+    carried over from the old strategy.
+    
+    Args:
+        strategy_id (str): The ID of the strategy to update (required)
+        thesis (Optional[str]): Updated reasoning for the trade
+        thesis_probability (Optional[float]): Updated probability estimate (0.0-1.0)
+        entry_max_price (Optional[float]): Updated max entry price (0.0-1.0)
+        exit_take_profit_price (Optional[float]): Updated take profit price (0.0-1.0)
+        exit_stop_loss_price (Optional[float]): Updated stop loss price (0.0-1.0)
+        exit_time_stop_utc (Optional[str]): Updated time-based exit (ISO format)
+        valid_until_utc (Optional[str]): Updated strategy expiration (ISO format)
+        notes (Optional[str]): Updated additional notes
+    
+    Returns:
+        dict: A dictionary containing:
+            - old_strategy_id (str): The ID of the expired strategy
+            - new_strategy (dict): The new strategy object with:
+                - strategy_id (str): New unique ID for the updated strategy
+                - account_name (str): Account name
+                - ticker (str): Market ticker
+                - thesis (str): Reasoning (updated or original)
+                - thesis_probability (float): Probability estimate
+                - entry_max_price (float): Max entry price
+                - entry_min_implied_edge (float): Min required edge
+                - entry_max_capital_risk (float): Max capital to risk
+                - entry_max_position_shares (int): Max shares
+                - exit_take_profit_price (float): Take profit price
+                - exit_stop_loss_price (float): Stop loss price
+                - exit_time_stop_utc (Optional[str]): Time-based exit
+                - valid_until_utc (Optional[str]): Strategy expiration
+                - notes (Optional[str]): Additional notes
+                - created_at (str): Creation timestamp of new strategy
+                - updated_at (str): Last update timestamp
+    
+    Raises:
+        ValueError: If POLY_PAPER_URL not set in environment
+        httpx.HTTPStatusError: If the API request fails (e.g., strategy not found, already expired)
+    
+    Example:
+        # Update the take profit and stop loss for a strategy
+        result = await update_kalshi_strategy(
+            strategy_id="abc123-def456-789",
+            exit_take_profit_price=0.95,  # Raise take profit
+            exit_stop_loss_price=0.35,    # Tighten stop loss
+            notes="Adjusted based on new market conditions"
+        )
+        print(f"Old strategy {result['old_strategy_id']} replaced with {result['new_strategy']['strategy_id']}")
+    """
+    poly_paper_url = os.getenv("POLY_PAPER_URL")
+    
+    if not poly_paper_url:
+        raise ValueError("POLY_PAPER_URL not set in environment")
+    
+    # Build request payload with only the fields to update
+    payload = {
+        "strategy_id": strategy_id,
+    }
+    
+    # Add optional fields if provided
+    if thesis is not None:
+        payload["thesis"] = thesis
+    if thesis_probability is not None:
+        payload["thesis_probability"] = thesis_probability
+    if entry_max_price is not None:
+        payload["entry_max_price"] = entry_max_price
+    if exit_take_profit_price is not None:
+        payload["exit_take_profit_price"] = exit_take_profit_price
+    if exit_stop_loss_price is not None:
+        payload["exit_stop_loss_price"] = exit_stop_loss_price
+    if exit_time_stop_utc is not None:
+        payload["exit_time_stop_utc"] = exit_time_stop_utc
+    if valid_until_utc is not None:
+        payload["valid_until_utc"] = valid_until_utc
+    if notes is not None:
+        payload["notes"] = notes
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.put(
+            f"{poly_paper_url.rstrip('/')}/strategies",
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+    
+    # Convert Decimal fields to float in the new strategy
+    new_strategy = data.get("new_strategy", {})
+    new_strategy["thesis_probability"] = float(new_strategy["thesis_probability"])
+    new_strategy["entry_max_price"] = float(new_strategy["entry_max_price"])
+    new_strategy["entry_min_implied_edge"] = float(new_strategy["entry_min_implied_edge"])
+    new_strategy["entry_max_capital_risk"] = float(new_strategy["entry_max_capital_risk"])
+    new_strategy["exit_take_profit_price"] = float(new_strategy["exit_take_profit_price"])
+    new_strategy["exit_stop_loss_price"] = float(new_strategy["exit_stop_loss_price"])
+    
+    return data
+
