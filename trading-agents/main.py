@@ -11,6 +11,7 @@ from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.genai.types import Content, Part
 from agents.agent import root_agent
 from strategy_agent.agent import root_agent as strategy_agent
+from kalshi_strategy_agent.agent import root_agent as kalshi_strategy_agent
 
 # Load environment variables from .env file
 load_dotenv()
