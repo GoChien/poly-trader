@@ -65,11 +65,13 @@ from strategy_utils import (
     CreateStrategyResponse,
     GetActiveStrategiesResponse,
     ProcessStrategiesResponse,
+    RemoveStrategyResponse,
     UpdateStrategyRequest,
     UpdateStrategyResponse,
     create_strategy_handler,
     get_active_strategies_handler,
     process_strategies_handler,
+    remove_strategy_handler,
     update_strategy_handler,
 )
 
@@ -283,6 +285,27 @@ async def update_strategy(
     - valid_until_utc, notes
     """
     return await update_strategy_handler(request, db)
+
+
+@app.delete("/strategies", response_model=RemoveStrategyResponse)
+async def remove_strategy(
+    strategy_id: str, db: AsyncSession = Depends(get_db)
+) -> RemoveStrategyResponse:
+    """
+    Remove (expire) a strategy by setting its valid_until_utc to now.
+    
+    This deactivates the strategy so it will no longer execute trades.
+    The strategy is not deleted from the database, just expired for record-keeping.
+    
+    Args:
+    - strategy_id: The ID of the strategy to remove (query parameter)
+    
+    Returns:
+    - success: True if the strategy was successfully removed
+    - strategy_id: The ID of the removed strategy
+    - message: Confirmation message
+    """
+    return await remove_strategy_handler(strategy_id, db)
 
 
 @app.post("/strategies/process", response_model=ProcessStrategiesResponse)

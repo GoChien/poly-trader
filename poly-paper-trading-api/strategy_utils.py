@@ -93,6 +93,12 @@ class UpdateStrategyResponse(BaseModel):
     new_strategy: StrategyResponse
 
 
+class RemoveStrategyResponse(BaseModel):
+    success: bool
+    strategy_id: str
+    message: str
+
+
 async def create_strategy_handler(
     request: CreateStrategyRequest, db: AsyncSession
 ) -> CreateStrategyResponse:
@@ -358,6 +364,56 @@ async def update_strategy_handler(
         await db.rollback()
         raise HTTPException(
             status_code=500, detail=f"Failed to update strategy: {str(e)}"
+        )
+
+
+async def remove_strategy_handler(
+    strategy_id: str, db: AsyncSession
+) -> RemoveStrategyResponse:
+    """
+    Remove (expire) a strategy by setting its valid_until_utc to now.
+    
+    This effectively deactivates the strategy so it will no longer execute trades.
+    The strategy is not deleted from the database, just expired.
+    """
+    try:
+        # Find the existing strategy
+        stmt = select(Strategy).where(Strategy.strategy_id == strategy_id)
+        result = await db.execute(stmt)
+        strategy = result.scalar_one_or_none()
+
+        if not strategy:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Strategy with id '{strategy_id}' not found"
+            )
+
+        now = datetime.now(timezone.utc)
+
+        # Check if strategy is already expired
+        if strategy.valid_until_utc and strategy.valid_until_utc <= now:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Strategy '{strategy_id}' is already expired"
+            )
+
+        # Expire the strategy
+        strategy.valid_until_utc = now
+        await db.commit()
+
+        return RemoveStrategyResponse(
+            success=True,
+            strategy_id=strategy.strategy_id,
+            message=f"Strategy for {strategy.ticker} has been successfully removed (expired)"
+        )
+
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500, detail=f"Failed to remove strategy: {str(e)}"
         )
 
 
