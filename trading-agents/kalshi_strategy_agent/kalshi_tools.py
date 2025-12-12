@@ -495,3 +495,54 @@ async def update_kalshi_strategy(
     
     return data
 
+
+async def remove_kalshi_strategy(strategy_id: str) -> dict:
+    """Remove (expire) a trading strategy by setting its valid_until_utc to now.
+    
+    This tool deactivates a strategy so it will no longer execute trades.
+    The strategy is not deleted from the database - it's just expired for
+    record-keeping and audit purposes.
+    
+    Use this when:
+    - You want to stop a strategy from executing any more trades
+    - Market conditions have changed and the strategy is no longer valid
+    - You've changed your thesis and don't want the strategy active anymore
+    - You want to close out a position manually instead of waiting for exit conditions
+    
+    Args:
+        strategy_id (str): The ID of the strategy to remove
+    
+    Returns:
+        dict: A dictionary containing:
+            - success (bool): True if the strategy was successfully removed
+            - strategy_id (str): The ID of the removed strategy
+            - message (str): Confirmation message
+    
+    Raises:
+        ValueError: If POLY_PAPER_URL not set in environment
+        httpx.HTTPStatusError: If the API request fails (e.g., strategy not found, already expired)
+    
+    Example:
+        # Remove a strategy that's no longer needed
+        result = await remove_kalshi_strategy("abc123-def456-789")
+        if result["success"]:
+            print(result["message"])
+        
+        # Example output:
+        # "Strategy for KXBTC-24DEC31-T100000 has been successfully removed (expired)"
+    """
+    poly_paper_url = os.getenv("POLY_PAPER_URL")
+    
+    if not poly_paper_url:
+        raise ValueError("POLY_PAPER_URL not set in environment")
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.delete(
+            f"{poly_paper_url.rstrip('/')}/strategies",
+            params={"strategy_id": strategy_id},
+        )
+        response.raise_for_status()
+        data = response.json()
+    
+    return data
+
