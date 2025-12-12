@@ -1,6 +1,6 @@
 import textwrap
 from google.adk.agents.llm_agent import Agent
-from kalshi_strategy_agent.kalshi_tools import get_kalshi_balance, get_kalshi_positions, list_new_markets
+from kalshi_strategy_agent.kalshi_tools import create_kalshi_strategy, get_kalshi_balance, get_kalshi_positions, list_new_markets
 from agents.search_agent import google_search_agent
 from google.adk.tools.agent_tool import AgentTool
 
@@ -89,6 +89,8 @@ root_agent = Agent(
     description='A Kalshi trading agent that monitors portfolios, analyzes markets, and provides data-driven trading suggestions for simulated paper trading.',
     instruction=KALSHI_AGENT_INSTRUCTION,
     tools=[
+        # Strategy Management
+        create_kalshi_strategy,
         # Portfolio state
         get_kalshi_balance,
         get_kalshi_positions,
