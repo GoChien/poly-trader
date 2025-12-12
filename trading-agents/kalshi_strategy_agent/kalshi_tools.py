@@ -308,3 +308,74 @@ async def create_kalshi_strategy(
     
     return data
 
+
+async def get_active_kalshi_strategies() -> dict:
+    """Get all active strategies for the Kalshi account.
+    
+    This tool retrieves all active trading strategies for your Kalshi account.
+    A strategy is considered active if:
+    - valid_until_utc is later than the current time, OR
+    - valid_until_utc is not set (null)
+    
+    Active strategies are being monitored and will automatically execute trades
+    based on their entry/exit conditions.
+    
+    Returns:
+        dict: A dictionary containing:
+            - account_name (str): The account name
+            - strategies (list[dict]): List of active strategy objects with:
+                - strategy_id (str): Unique strategy ID
+                - account_name (str): Account name
+                - ticker (str): Market ticker
+                - thesis (str): Your reasoning for this trade
+                - thesis_probability (float): Your probability estimate (0.0-1.0)
+                - entry_max_price (float): Max entry price (0.0-1.0)
+                - entry_min_implied_edge (float): Min required edge (0.0-1.0)
+                - entry_max_capital_risk (float): Max capital to risk in dollars
+                - entry_max_position_shares (int): Max shares to buy
+                - exit_take_profit_price (float): Take profit price (0.0-1.0)
+                - exit_stop_loss_price (float): Stop loss price (0.0-1.0)
+                - exit_time_stop_utc (Optional[str]): Time-based exit (ISO format)
+                - valid_until_utc (Optional[str]): Strategy expiration (ISO format)
+                - notes (Optional[str]): Additional notes
+                - created_at (str): Strategy creation timestamp
+                - updated_at (str): Last update timestamp
+    
+    Raises:
+        ValueError: If POLY_PAPER_URL or KALSHI_ACCOUNT_NAME not set in environment
+        httpx.HTTPStatusError: If the API request fails
+    
+    Example:
+        # Get all active strategies
+        result = await get_active_kalshi_strategies()
+        print(f"Found {len(result['strategies'])} active strategies")
+        for strategy in result['strategies']:
+            print(f"  - {strategy['ticker']}: {strategy['thesis'][:50]}...")
+    """
+    poly_paper_url = os.getenv("POLY_PAPER_URL")
+    kalshi_account_name = os.getenv("KALSHI_ACCOUNT_NAME")
+    
+    if not poly_paper_url:
+        raise ValueError("POLY_PAPER_URL not set in environment")
+    if not kalshi_account_name:
+        raise ValueError("KALSHI_ACCOUNT_NAME not set in environment")
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            f"{poly_paper_url.rstrip('/')}/strategies/active",
+            params={"account_name": kalshi_account_name},
+        )
+        response.raise_for_status()
+        data = response.json()
+    
+    # Convert Decimal fields to float for easier consumption in all strategies
+    for strategy in data.get("strategies", []):
+        strategy["thesis_probability"] = float(strategy["thesis_probability"])
+        strategy["entry_max_price"] = float(strategy["entry_max_price"])
+        strategy["entry_min_implied_edge"] = float(strategy["entry_min_implied_edge"])
+        strategy["entry_max_capital_risk"] = float(strategy["entry_max_capital_risk"])
+        strategy["exit_take_profit_price"] = float(strategy["exit_take_profit_price"])
+        strategy["exit_stop_loss_price"] = float(strategy["exit_stop_loss_price"])
+    
+    return data
+

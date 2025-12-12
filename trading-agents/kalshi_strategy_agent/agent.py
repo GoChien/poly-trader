@@ -1,6 +1,12 @@
 import textwrap
 from google.adk.agents.llm_agent import Agent
-from kalshi_strategy_agent.kalshi_tools import create_kalshi_strategy, get_kalshi_balance, get_kalshi_positions, list_new_markets
+from kalshi_strategy_agent.kalshi_tools import (
+    create_kalshi_strategy,
+    get_active_kalshi_strategies,
+    get_kalshi_balance,
+    get_kalshi_positions,
+    list_new_markets,
+)
 from agents.search_agent import google_search_agent
 from google.adk.tools.agent_tool import AgentTool
 
@@ -13,13 +19,26 @@ KALSHI_AGENT_INSTRUCTION = textwrap.dedent("""\
     1. Monitor account balance and portfolio value
     2. Review current positions across markets and events
     3. Analyze available markets and identify trading opportunities
-    4. Provide data-driven trading suggestions and insights
+    4. Create and manage automated trading strategies
+    5. Provide data-driven trading suggestions and insights
     
     ## Available Tools
     
     ### Portfolio Management
     - get_kalshi_balance(): Check available balance and total portfolio value in dollars
     - get_kalshi_positions(): Review all market and event positions with exposure and P&L
+    
+    ### Strategy Management
+    - get_active_kalshi_strategies(): View all currently active trading strategies
+      - Returns list of strategies with thesis, entry/exit conditions, and status
+      - Use this to check what strategies are already running before creating new ones
+    
+    - create_kalshi_strategy(): Create a new automated trading strategy for a market
+      - Required: ticker, thesis, thesis_probability, entry_max_price, exit_take_profit_price, exit_stop_loss_price
+      - Optional: exit_time_stop_utc, valid_until_utc, notes
+      - Risk limits are hardcoded: 5% min edge, $200 max risk, 1000 max shares
+      - Strategy will automatically execute trades based on your defined conditions
+      - IMPORTANT: Only one active strategy per ticker is allowed
     
     ### Market Research
     - list_new_markets(exclude_tickers=[]): Browse available Kalshi markets with current prices
@@ -42,22 +61,24 @@ KALSHI_AGENT_INSTRUCTION = textwrap.dedent("""\
        - Realized P&L and fees paid
        - Risk concentration
     
-    ### Market Analysis & Suggestions
+    ### Market Analysis & Strategy Creation
     When asked to find opportunities or analyze markets:
-    1. Call list_new_markets() to see available markets
-       - You can exclude tickers you've already reviewed to see more options
+    1. Call get_active_kalshi_strategies() to check existing strategies
+       - Avoid creating duplicate strategies for the same ticker
+    2. Call list_new_markets() to see available markets
+       - You can exclude tickers you've already reviewed or have strategies for
        - Focus on markets with clear yes/no outcomes and reasonable pricing
-    2. Use google_search_agent to research interesting markets and gather context
-    3. Analyze the markets based on:
+    3. Use google_search_agent to research interesting markets and gather context
+    4. Analyze the markets based on:
        - Bid-ask spreads (tighter spreads = better liquidity)
        - Market timing (close_time and expected_expiration_time)
        - Event likelihood based on your research
        - Current pricing vs. your assessed probability
-    4. Provide specific trading suggestions:
-       - Which side to trade (YES or NO)
-       - Entry price targets (use bid/ask prices)
-       - Position sizing recommendation
-       - Risk assessment and reasoning
+    5. Create automated strategies or provide manual trading suggestions:
+       - Use create_kalshi_strategy() to set up automated trading
+       - Define clear entry/exit conditions based on your analysis
+       - Explain your thesis thoroughly with supporting research
+       - Set realistic take profit and stop loss levels
     
     ## Trading Analysis Guidelines
     
@@ -86,10 +107,11 @@ KALSHI_AGENT_INSTRUCTION = textwrap.dedent("""\
 root_agent = Agent(
     model='gemini-2.5-pro',
     name='kalshi_agent',
-    description='A Kalshi trading agent that monitors portfolios, analyzes markets, and provides data-driven trading suggestions for simulated paper trading.',
+    description='A Kalshi trading agent that monitors portfolios, analyzes markets, creates automated strategies, and provides data-driven trading suggestions for simulated paper trading.',
     instruction=KALSHI_AGENT_INSTRUCTION,
     tools=[
         # Strategy Management
+        get_active_kalshi_strategies,
         create_kalshi_strategy,
         # Portfolio state
         get_kalshi_balance,
