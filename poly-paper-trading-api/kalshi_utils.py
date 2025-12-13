@@ -2,6 +2,7 @@ import os
 import base64
 import datetime
 import uuid
+from datetime import datetime as DateTime
 from decimal import Decimal
 from typing import Optional
 import httpx
@@ -528,6 +529,21 @@ class UpdateKalshiAccountValueResponse(BaseModel):
     total_value: Decimal
 
 
+class KalshiAccountValueRecord(BaseModel):
+    """Individual account value record"""
+    timestamp: DateTime
+    total_value: Decimal
+
+
+class GetKalshiAccountValueHistoryResponse(BaseModel):
+    """Response model for Kalshi account value history"""
+    account_id: uuid.UUID
+    account_name: str
+    start_time: DateTime
+    end_time: DateTime
+    values: list[KalshiAccountValueRecord]
+
+
 async def get_kalshi_markets(
     db: AsyncSession,
     exclude_tickers: Optional[list[str]] = None
@@ -714,5 +730,63 @@ async def update_kalshi_account_value_handler(
         account_id=account.account_id,
         account_name=account.account_name,
         total_value=total_value,
+    )
+
+
+async def get_kalshi_account_value_history_handler(
+    account_name: str,
+    start_time: DateTime,
+    end_time: DateTime,
+    db: AsyncSession,
+) -> GetKalshiAccountValueHistoryResponse:
+    """
+    Get Kalshi account value history between start_time and end_time.
+    
+    Returns all recorded account values within the specified time range,
+    ordered by timestamp ascending.
+    
+    Args:
+        account_name: Name of the Kalshi account
+        start_time: Start of time range
+        end_time: End of time range
+        db: Database session
+        
+    Returns:
+        GetKalshiAccountValueHistoryResponse with account value history
+        
+    Raises:
+        HTTPException: If account not found
+    """
+    # Get Kalshi account from database
+    account = await _get_kalshi_account(db, account_name)
+    
+    # Query account values within the time range
+    stmt = (
+        select(AccountValue)
+        .where(
+            AccountValue.account_id == account.account_id,
+            AccountValue.timestamp >= start_time,
+            AccountValue.timestamp <= end_time,
+        )
+        .order_by(AccountValue.timestamp)
+    )
+    result = await db.execute(stmt)
+    account_values = result.scalars().all()
+    
+    # Convert to response format
+    values = [
+        KalshiAccountValueRecord(
+            timestamp=av.timestamp,
+            total_value=av.total_value,
+        )
+        for av in account_values
+    ]
+    
+    return GetKalshiAccountValueHistoryResponse(
+        account_id=account.account_id,
+        account_name=account.account_name,
+        start_time=start_time,
+        end_time=end_time,
+        values=values,
     )
 

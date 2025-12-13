@@ -36,6 +36,7 @@ from kalshi_utils import (
     CreateKalshiAccountRequest,
     CreateKalshiAccountResponse,
     GetKalshiAccountPositionsResponse,
+    GetKalshiAccountValueHistoryResponse,
     GetKalshiBalanceResponse,
     GetKalshiMarketsResponse,
     KalshiMarketResponse,
@@ -43,6 +44,7 @@ from kalshi_utils import (
     create_kalshi_account_handler,
     get_kalshi_account_balance,
     get_kalshi_account_positions,
+    get_kalshi_account_value_history_handler,
     get_kalshi_markets,
     update_kalshi_account_value_handler,
 )
@@ -447,6 +449,33 @@ async def update_kalshi_account_value(
     - total_value: Total account value in dollars (balance + portfolio value, converted from cents)
     """
     return await update_kalshi_account_value_handler(account_name, db)
+
+
+@app.get("/kalshi/accounts/value/history", response_model=GetKalshiAccountValueHistoryResponse)
+async def get_kalshi_account_value_history(
+    account_name: str,
+    start_time: datetime,
+    end_time: datetime,
+    db: AsyncSession = Depends(get_db),
+) -> GetKalshiAccountValueHistoryResponse:
+    """
+    Get Kalshi account value history between start_time and end_time.
+    
+    Returns all recorded account values within the specified time range,
+    ordered by timestamp ascending.
+    
+    - account_name: Name of the Kalshi account
+    - start_time: Start of time range (datetime)
+    - end_time: End of time range (datetime)
+    
+    Returns:
+    - account_id: UUID of the Kalshi account
+    - account_name: Name of the account
+    - start_time: Start of the queried time range
+    - end_time: End of the queried time range
+    - values: List of account value records with timestamp and total_value
+    """
+    return await get_kalshi_account_value_history_handler(account_name, start_time, end_time, db)
 
 
 @app.get("/kalshi/markets", response_model=GetKalshiMarketsResponse)
