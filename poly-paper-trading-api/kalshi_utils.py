@@ -191,7 +191,16 @@ async def get_kalshi_account_balance(db: AsyncSession, account_name: str) -> dic
             f"{base_url}{path}",
             headers=headers
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            # Log the error response body for debugging
+            error_detail = response.text
+            print(f"Kalshi API Error (get_kalshi_account_balance): Status {response.status_code}")
+            print(f"Error detail: {error_detail}")
+            print(f"Request URL: {base_url}{path}")
+            print(f"Account: {account_name}, is_demo: {account.is_demo}")
+            raise
         return response.json()
 
 
@@ -247,7 +256,17 @@ async def get_kalshi_account_positions(db: AsyncSession, account_name: str) -> d
                 headers=headers,
                 params=params
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                # Log the error response body for debugging
+                error_detail = response.text
+                print(f"Kalshi API Error (get_kalshi_account_positions): Status {response.status_code}")
+                print(f"Error detail: {error_detail}")
+                print(f"Request URL: {base_url}{path}")
+                print(f"Request params: {params}")
+                print(f"Account: {account_name}, is_demo: {account.is_demo}")
+                raise
             data = response.json()
             
             # Accumulate positions
@@ -275,7 +294,7 @@ async def create_kalshi_order(
     expiration_ts: Optional[int] = None,
     yes_price: Optional[int] = None,
     no_price: Optional[int] = None,
-    type: str = "market",
+    type: str = "limit",
 ) -> dict:
     """
     Create an order on Kalshi using their API.
@@ -289,7 +308,8 @@ async def create_kalshi_order(
         side: "yes" or "no" - which side to bet on
         action: "buy" or "sell"
         count: Number of contracts (must be >= 1)
-        expiration_ts: Optional expiration timestamp in milliseconds
+        expiration_ts: Optional expiration timestamp in seconds (Unix timestamp). 
+                      Defaults to 10 minutes from now for limit orders. Not used for market orders.
         yes_price: Optional yes price in cents (1-99) for limit orders
         no_price: Optional no price in cents (1-99) for limit orders
         type: Order type - "market" or "limit" (default: "market")
@@ -318,9 +338,9 @@ async def create_kalshi_order(
     # Get account credentials from database
     account = await _get_kalshi_account(db, account_name)
     
-    # Set default expiration to 10 minutes from now if not provided
-    if expiration_ts is None:
-        expiration_ts = int((datetime.datetime.now().timestamp() + 600) * 1000)
+    # Set default expiration to 10 minutes from now for limit orders if not provided
+    if type == "limit" and expiration_ts is None:
+        expiration_ts = int(datetime.datetime.now().timestamp() + 600)
     
     # Get GCP project ID from environment
     gcp_project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
@@ -346,7 +366,8 @@ async def create_kalshi_order(
     }
     
     # Add optional fields
-    if expiration_ts:
+    # Only add expiration_ts for limit orders
+    if type == "limit" and expiration_ts:
         payload["expiration_ts"] = expiration_ts
     if yes_price is not None:
         payload["yes_price"] = yes_price
@@ -363,7 +384,14 @@ async def create_kalshi_order(
             headers=headers,
             json=payload
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            # Log the error response body for debugging
+            error_detail = response.text
+            print(f"Kalshi API Error: {error_detail}")
+            print(f"Request payload: {payload}")
+            raise
         return response.json()
 
 
@@ -556,7 +584,17 @@ async def get_kalshi_markets(
                 f"{base_url}{path}",
                 params=params
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                # Log the error response body for debugging
+                error_detail = response.text
+                print(f"Kalshi API Error (get markets): Status {response.status_code}")
+                print(f"Error detail: {error_detail}")
+                print(f"Request URL: {base_url}{path}")
+                print(f"Request params: {params}")
+                print(f"Batch {i//batch_size + 1}, tickers: {batch_tickers[:5]}..." if len(batch_tickers) > 5 else f"Batch {i//batch_size + 1}, tickers: {batch_tickers}")
+                raise
             data = response.json()
             
             # Accumulate markets from this batch

@@ -561,6 +561,7 @@ class ProcessStrategyResult(BaseModel):
     order_price: Optional[Decimal] = None
     current_bid_price: Optional[Decimal] = None
     current_ask_price: Optional[Decimal] = None
+    order_id: Optional[str] = None
 
 
 async def process_strategy_handler(
@@ -598,11 +599,11 @@ async def process_strategy_handler(
             )
         
         if strategy.side == StrategySide.YES:
-            ask_price = market_data['yes_ask_dollars']
-            bid_price = market_data['yes_bid_dollars']
+            ask_price = market_data['yes_ask']
+            bid_price = market_data['yes_bid']
         else:
-            ask_price = market_data['no_ask_dollars']
-            bid_price = market_data['no_bid_dollars']
+            ask_price = market_data['no_ask']
+            bid_price = market_data['no_bid']
 
         if ask_price is None or bid_price is None:
             raise HTTPException(
@@ -634,7 +635,7 @@ async def process_strategy_handler(
                 yes_price = price_cents if strategy.side == StrategySide.YES else None
                 no_price = price_cents if strategy.side == StrategySide.NO else None
                 
-                await create_kalshi_order(
+                order_response = await create_kalshi_order(
                     db=db,
                     account_name=strategy.account_name,
                     ticker=strategy.ticker,
@@ -655,6 +656,7 @@ async def process_strategy_handler(
                     order_price=bid_price,
                     current_bid_price=bid_price,
                     current_ask_price=ask_price,
+                    order_id=order_response.get('order', {}).get('order_id') or order_response.get('order_id'),
                 )
             
             # Check stop loss
@@ -667,7 +669,7 @@ async def process_strategy_handler(
                 yes_price = price_cents if strategy.side == StrategySide.YES else None
                 no_price = price_cents if strategy.side == StrategySide.NO else None
                 
-                await create_kalshi_order(
+                order_response = await create_kalshi_order(
                     db=db,
                     account_name=strategy.account_name,
                     ticker=strategy.ticker,
@@ -688,6 +690,7 @@ async def process_strategy_handler(
                     order_price=bid_price,
                     current_bid_price=bid_price,
                     current_ask_price=ask_price,
+                    order_id=order_response.get('order', {}).get('order_id') or order_response.get('order_id'),
                 )
             
             # Otherwise, keep holding
@@ -747,7 +750,7 @@ async def process_strategy_handler(
         yes_price = price_cents if strategy.side == StrategySide.YES else None
         no_price = price_cents if strategy.side == StrategySide.NO else None
         
-        await create_kalshi_order(
+        order_response = await create_kalshi_order(
             db=db,
             account_name=strategy.account_name,
             ticker=strategy.ticker,
@@ -768,6 +771,7 @@ async def process_strategy_handler(
             order_price=ask_price,
             current_bid_price=bid_price,
             current_ask_price=ask_price,
+            order_id=order_response.get('order', {}).get('order_id') or order_response.get('order_id'),
         )
         
     except HTTPException:
