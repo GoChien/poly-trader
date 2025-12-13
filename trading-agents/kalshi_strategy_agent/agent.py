@@ -28,8 +28,12 @@ KALSHI_AGENT_INSTRUCTION = textwrap.dedent("""\
     1. Check active strategies with get_active_kalshi_strategies()
     2. Browse markets with list_new_markets()
     3. Research opportunities with google_search_agent
-    4. Create strategies with create_kalshi_strategy() (provide ticker, thesis, thesis_probability, entry_max_price, exit_take_profit_price, exit_stop_loss_price)
+    4. Create strategies with create_kalshi_strategy() (provide ticker, side, thesis, thesis_probability, entry_max_price, exit_take_profit_price, exit_stop_loss_price)
     5. Update or remove strategies as market conditions change
+    
+    ## Strategy Side
+    - side="yes": Betting that the event WILL happen (default)
+    - side="no": Betting that the event will NOT happen
     
     ## Guidelines
     - Check portfolio and positions before trading

@@ -265,6 +265,108 @@ async def get_kalshi_account_positions(db: AsyncSession, account_name: str) -> d
     }
 
 
+async def create_kalshi_order(
+    db: AsyncSession,
+    account_name: str,
+    ticker: str,
+    side: str,
+    action: str,
+    count: int,
+    expiration_ts: Optional[int] = None,
+    yes_price: Optional[int] = None,
+    no_price: Optional[int] = None,
+    type: str = "market",
+) -> dict:
+    """
+    Create an order on Kalshi using their API.
+    
+    Reference: https://docs.kalshi.com/api-reference/orders/create-order
+    
+    Args:
+        db: Database session
+        account_name: Name of the Kalshi account
+        ticker: Market ticker symbol
+        side: "yes" or "no" - which side to bet on
+        action: "buy" or "sell"
+        count: Number of contracts (must be >= 1)
+        expiration_ts: Optional expiration timestamp in milliseconds
+        yes_price: Optional yes price in cents (1-99) for limit orders
+        no_price: Optional no price in cents (1-99) for limit orders
+        type: Order type - "market" or "limit" (default: "market")
+        
+    Returns:
+        Dictionary containing the created order details with fields:
+            - order_id (str): Unique order ID
+            - ticker (str): Market ticker
+            - side (str): "yes" or "no"
+            - action (str): "buy" or "sell"
+            - type (str): "limit" or "market"
+            - status (str): "resting", "canceled", or "executed"
+            - yes_price (int): Yes price in cents
+            - no_price (int): No price in cents
+            - yes_price_dollars (str): Yes price in dollars
+            - no_price_dollars (str): No price in dollars
+            - fill_count (int): Number of contracts filled
+            - remaining_count (int): Number of contracts remaining
+            - initial_count (int): Initial order size
+            - created_time (str): ISO timestamp
+            
+    Raises:
+        ValueError: If account not found or invalid parameters
+        httpx.HTTPStatusError: If the API request fails
+    """
+    # Get account credentials from database
+    account = await _get_kalshi_account(db, account_name)
+    
+    # Set default expiration to 10 minutes from now if not provided
+    if expiration_ts is None:
+        expiration_ts = int((datetime.datetime.now().timestamp() + 600) * 1000)
+    
+    # Get GCP project ID from environment
+    gcp_project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+    if not gcp_project_id:
+        raise ValueError("GOOGLE_CLOUD_PROJECT environment variable must be set")
+    
+    # Load private key
+    private_key = _load_private_key(gcp_project_id, account.secret_name)
+    
+    # Determine base URL based on is_demo flag
+    base_url = "https://demo-api.kalshi.co" if account.is_demo else "https://api.elections.kalshi.com"
+    
+    # Build order payload
+    path = '/trade-api/v2/portfolio/orders'
+    method = 'POST'
+    
+    payload = {
+        "ticker": ticker,
+        "side": side,
+        "action": action,
+        "count": count,
+        "type": type,
+    }
+    
+    # Add optional fields
+    if expiration_ts:
+        payload["expiration_ts"] = expiration_ts
+    if yes_price is not None:
+        payload["yes_price"] = yes_price
+    if no_price is not None:
+        payload["no_price"] = no_price
+    
+    # Get authentication headers
+    headers = _get_headers(private_key, account.key_id, method, path)
+    headers['Content-Type'] = 'application/json'
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{base_url}{path}",
+            headers=headers,
+            json=payload
+        )
+        response.raise_for_status()
+        return response.json()
+
+
 # Request/Response Models
 class CreateKalshiAccountRequest(BaseModel):
     """Request model for creating a Kalshi account"""

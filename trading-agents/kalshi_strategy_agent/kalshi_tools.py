@@ -187,6 +187,7 @@ async def create_kalshi_strategy(
     entry_max_price: float,
     exit_take_profit_price: float,
     exit_stop_loss_price: float,
+    side: str = "yes",
     exit_time_stop_utc: Optional[str] = None,
     valid_until_utc: Optional[str] = None,
     notes: Optional[str] = None,
@@ -211,14 +212,17 @@ async def create_kalshi_strategy(
         thesis (str): Your detailed reasoning for why you believe in this trade.
             Explain what research you did, what you found, and why you think
             the market is mispriced.
-        thesis_probability (float): Your estimated probability of YES outcome (0.0 to 1.0).
-            For example, 0.68 means you estimate 68% chance of YES.
+        thesis_probability (float): Your estimated probability of the outcome (0.0 to 1.0).
+            For example, 0.68 means you estimate 68% chance of the outcome.
         entry_max_price (float): Maximum price you're willing to pay to enter (0.0 to 1.0).
             The strategy will only buy if ask price is at or below this.
         exit_take_profit_price (float): Price at which to sell for profit (0.0 to 1.0).
             When bid price reaches this, all shares will be sold.
         exit_stop_loss_price (float): Price at which to cut losses (0.0 to 1.0).
             When bid price falls to this, all shares will be sold to limit losses.
+        side (str): Which side to bet on - "yes" or "no". Defaults to "yes".
+            - "yes": Betting that the event will happen
+            - "no": Betting that the event will NOT happen
         exit_time_stop_utc (Optional[str]): Optional time-based exit in ISO format.
             For example: "2024-12-31T23:59:59Z". If set, position will be closed at this time.
         valid_until_utc (Optional[str]): Optional strategy expiration in ISO format.
@@ -272,6 +276,7 @@ async def create_kalshi_strategy(
     payload = {
         "account_name": kalshi_account_name,
         "ticker": ticker,
+        "side": side,
         "thesis": thesis,
         "thesis_probability": thesis_probability,
         "entry_max_price": entry_max_price,

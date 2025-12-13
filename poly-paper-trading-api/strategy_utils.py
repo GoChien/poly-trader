@@ -12,16 +12,15 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import database
+from kalshi_utils import get_kalshi_account_positions, create_kalshi_order
 from models.kalshi_account import KalshiAccount
-from models.order import OrderSide
-from models.position import Position
-from models.strategy import Strategy
-from order_utils import get_market_price, PlaceLimitOrderRequest, place_limit_order_handler
+from models.strategy import Strategy, StrategySide
 
 
 class CreateStrategyRequest(BaseModel):
     account_name: str
     ticker: str
+    side: StrategySide
     thesis: str
     thesis_probability: Decimal
     entry_max_price: Decimal
@@ -39,6 +38,7 @@ class CreateStrategyResponse(BaseModel):
     strategy_id: str
     account_name: str
     ticker: str
+    side: StrategySide
     thesis: str
     thesis_probability: Decimal
     entry_max_price: Decimal
@@ -57,6 +57,7 @@ class StrategyResponse(BaseModel):
     strategy_id: str
     account_name: str
     ticker: str
+    side: StrategySide
     thesis: str
     thesis_probability: Decimal
     entry_max_price: Decimal
@@ -76,6 +77,7 @@ class StrategyWithMarketDataResponse(BaseModel):
     strategy_id: str
     account_name: str
     ticker: str
+    side: StrategySide
     thesis: str
     thesis_probability: Decimal
     entry_max_price: Decimal
@@ -172,6 +174,7 @@ async def create_strategy_handler(
             strategy_id=strategy_id,
             account_name=request.account_name,
             ticker=request.ticker,
+            side=request.side,
             thesis=request.thesis,
             thesis_probability=request.thesis_probability,
             entry_max_price=request.entry_max_price,
@@ -192,6 +195,7 @@ async def create_strategy_handler(
             strategy_id=strategy.strategy_id,
             account_name=strategy.account_name,
             ticker=strategy.ticker,
+            side=strategy.side,
             thesis=strategy.thesis,
             thesis_probability=strategy.thesis_probability,
             entry_max_price=strategy.entry_max_price,
@@ -279,6 +283,7 @@ async def get_active_strategies_handler(
                     strategy_id=s.strategy_id,
                     account_name=s.account_name,
                     ticker=s.ticker,
+                    side=s.side,
                     thesis=s.thesis,
                     thesis_probability=s.thesis_probability,
                     entry_max_price=s.entry_max_price,
@@ -422,6 +427,7 @@ async def update_strategy_handler(
             strategy_id=new_strategy_id,
             account_name=old_strategy.account_name,
             ticker=old_strategy.ticker,
+            side=old_strategy.side,
             thesis=request.thesis if request.thesis is not None else old_strategy.thesis,
             thesis_probability=(
                 request.thesis_probability
@@ -469,6 +475,7 @@ async def update_strategy_handler(
                 strategy_id=new_strategy.strategy_id,
                 account_name=new_strategy.account_name,
                 ticker=new_strategy.ticker,
+                side=new_strategy.side,
                 thesis=new_strategy.thesis,
                 thesis_probability=new_strategy.thesis_probability,
                 entry_max_price=new_strategy.entry_max_price,
@@ -557,7 +564,7 @@ class ProcessStrategyResult(BaseModel):
 
 
 async def process_strategy_handler(
-    strategy: Strategy, db: AsyncSession
+    strategy: Strategy, db: AsyncSession, position_map: dict[str, dict]
 ) -> ProcessStrategyResult:
     """
     Process a single trading strategy and execute trades based on entry/exit rules.
@@ -573,53 +580,78 @@ async def process_strategy_handler(
     1. If current bid price >= exit_take_profit_price: sell (take profit)
     2. If current bid price <= exit_stop_loss_price: sell (stop loss)
     3. Otherwise: hold
+    
+    Args:
+        strategy: Strategy to process
+        db: Database session
+        position_map: Dictionary mapping ticker -> Kalshi position data
     """
     try:
         # 1. Get market prices (both bid and ask)
-        ask_price = await get_market_price(strategy.ticker, OrderSide.BUY)  # Ask price for buying
-        bid_price = await get_market_price(strategy.ticker, OrderSide.SELL)  # Bid price for selling
+        market_data_map = await _fetch_market_data_for_tickers([strategy.ticker])
+        market_data = market_data_map.get(strategy.ticker)
         
-        # 2. Get existing position for this ticker under this account
-        # First, get the account_id from account_name
-        stmt = select(KalshiAccount).where(KalshiAccount.account_name == strategy.account_name)
-        result = await db.execute(stmt)
-        account = result.scalar_one_or_none()
-        
-        if not account:
+        if not market_data:
             raise HTTPException(
                 status_code=404,
-                detail=f"Account with name '{strategy.account_name}' not found"
+                detail=f"Market data not found for ticker '{strategy.ticker}'"
             )
         
-        stmt = select(Position).where(
-            Position.account_id == account.account_id,
-            Position.token_id == strategy.ticker,
-        )
-        result = await db.execute(stmt)
-        position = result.scalar_one_or_none()
-        
-        has_position = position is not None and position.shares > 0
+        if strategy.side == StrategySide.YES:
+            ask_price = market_data['yes_ask_dollars']
+            bid_price = market_data['yes_bid_dollars']
+        else:
+            ask_price = market_data['no_ask_dollars']
+            bid_price = market_data['no_bid_dollars']
+
+        if ask_price is None or bid_price is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Market prices not available for ticker '{strategy.ticker}' for side {strategy.side}"
+            )
+
+        # 2. Get existing position for this ticker from position_map
+        kalshi_position = position_map.get(strategy.ticker)
+        position_size = kalshi_position['position'] if kalshi_position else 0
+        position_side = StrategySide.YES if position_size >= 0 else StrategySide.NO
         
         # 3. If already have a position, check exit rules first
-        if has_position:
+        if position_size != 0:
+
+            if position_side != strategy.side:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Position side {position_side} does not match strategy side {strategy.side}"
+                )
+
             # Check take profit
             if bid_price >= strategy.exit_take_profit_price:
-                # Place sell order for all shares at bid price
-                order_request = PlaceLimitOrderRequest(
-                    account_id=account.account_id,
-                    price=bid_price,
-                    size=position.shares,
-                    side=OrderSide.SELL,
-                    token_id=strategy.ticker,
+                # Place sell order for all shares at bid price using Kalshi API
+                # Convert price from dollars to cents for Kalshi API
+                price_cents = int(round(float(bid_price) * 100))
+                
+                # Determine which price field to use based on strategy side
+                yes_price = price_cents if strategy.side == StrategySide.YES else None
+                no_price = price_cents if strategy.side == StrategySide.NO else None
+                
+                await create_kalshi_order(
+                    db=db,
+                    account_name=strategy.account_name,
+                    ticker=strategy.ticker,
+                    side=strategy.side.value,  # "yes" or "no"
+                    action="sell",
+                    count=abs(position_size),  # Use absolute value for count
+                    yes_price=yes_price,
+                    no_price=no_price,
+                    type="limit",
                 )
-                await place_limit_order_handler(order_request, db)
                 
                 return ProcessStrategyResult(
                     strategy_id=strategy.strategy_id,
                     ticker=strategy.ticker,
                     action="sell_take_profit",
                     reason=f"Take profit triggered: bid price {bid_price} >= target {strategy.exit_take_profit_price}",
-                    order_size=position.shares,
+                    order_size=abs(position_size),
                     order_price=bid_price,
                     current_bid_price=bid_price,
                     current_ask_price=ask_price,
@@ -627,22 +659,32 @@ async def process_strategy_handler(
             
             # Check stop loss
             if bid_price <= strategy.exit_stop_loss_price:
-                # Place sell order for all shares at bid price
-                order_request = PlaceLimitOrderRequest(
-                    account_id=account.account_id,
-                    price=bid_price,
-                    size=position.shares,
-                    side=OrderSide.SELL,
-                    token_id=strategy.ticker,
+                # Place sell order for all shares at bid price using Kalshi API
+                # Convert price from dollars to cents for Kalshi API
+                price_cents = int(round(float(bid_price) * 100))
+                
+                # Determine which price field to use based on strategy side
+                yes_price = price_cents if strategy.side == StrategySide.YES else None
+                no_price = price_cents if strategy.side == StrategySide.NO else None
+                
+                await create_kalshi_order(
+                    db=db,
+                    account_name=strategy.account_name,
+                    ticker=strategy.ticker,
+                    side=strategy.side.value,  # "yes" or "no"
+                    action="sell",
+                    count=abs(position_size),  # Use absolute value for count
+                    yes_price=yes_price,
+                    no_price=no_price,
+                    type="limit",
                 )
-                await place_limit_order_handler(order_request, db)
                 
                 return ProcessStrategyResult(
                     strategy_id=strategy.strategy_id,
                     ticker=strategy.ticker,
                     action="sell_stop_loss",
                     reason=f"Stop loss triggered: bid price {bid_price} <= stop loss {strategy.exit_stop_loss_price}",
-                    order_size=position.shares,
+                    order_size=abs(position_size),
                     order_price=bid_price,
                     current_bid_price=bid_price,
                     current_ask_price=ask_price,
@@ -697,15 +739,25 @@ async def process_strategy_handler(
                 current_ask_price=ask_price,
             )
         
-        # Place buy order
-        order_request = PlaceLimitOrderRequest(
-            account_id=account.account_id,
-            price=ask_price,
-            size=size,
-            side=OrderSide.BUY,
-            token_id=strategy.ticker,
+        # Place buy order using Kalshi API
+        # Convert price from dollars to cents for Kalshi API
+        price_cents = int(round(float(ask_price) * 100))
+        
+        # Determine which price field to use based on strategy side
+        yes_price = price_cents if strategy.side == StrategySide.YES else None
+        no_price = price_cents if strategy.side == StrategySide.NO else None
+        
+        await create_kalshi_order(
+            db=db,
+            account_name=strategy.account_name,
+            ticker=strategy.ticker,
+            side=strategy.side.value,  # "yes" or "no"
+            action="buy",
+            count=size,
+            yes_price=yes_price,
+            no_price=no_price,
+            type="limit",
         )
-        await place_limit_order_handler(order_request, db)
         
         return ProcessStrategyResult(
             strategy_id=strategy.strategy_id,
@@ -777,12 +829,19 @@ async def process_strategies_handler(
                 total_strategies=0,
                 results=[],
             )
-
+        
+        # Get all positions for this account from Kalshi API
+        positions_data = await get_kalshi_account_positions(db, account_name)
+        market_positions = positions_data.get('market_positions', [])
+        
+        # Create a mapping of ticker -> position for quick lookup
+        position_map = {pos['ticker']: pos for pos in market_positions}
+        
         # Process each strategy in parallel with separate sessions
         # Each strategy gets its own session to avoid concurrent commit/rollback conflicts
         async def process_with_new_session(strategy: Strategy) -> ProcessStrategyResult:
             async with database.async_session_maker() as strategy_db:
-                return await process_strategy_handler(strategy, strategy_db)
+                return await process_strategy_handler(strategy, strategy_db, position_map)
         
         tasks = [process_with_new_session(strategy) for strategy in strategies]
         results = await asyncio.gather(*tasks, return_exceptions=True)

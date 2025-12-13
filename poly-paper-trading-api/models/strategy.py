@@ -1,11 +1,17 @@
+import enum
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import DateTime, Integer, Numeric, String, Text, func
+from sqlalchemy import DateTime, Enum, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .account import Base
+
+
+class StrategySide(str, enum.Enum):
+    YES = "yes"
+    NO = "no"
 
 
 class Strategy(Base):
@@ -22,6 +28,9 @@ class Strategy(Base):
     )
     ticker: Mapped[str] = mapped_column(
         String(255), nullable=False, index=True
+    )
+    side: Mapped[StrategySide] = mapped_column(
+        Enum(StrategySide, native_enum=False, length=10), nullable=False, index=True
     )
 
     # Thesis
