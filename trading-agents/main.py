@@ -16,9 +16,17 @@ from kalshi_strategy_agent.agent import root_agent as kalshi_strategy_agent
 # Load environment variables from .env file
 load_dotenv()
 
-# Select agent based on USE_STRATEGY environment variable
+# Select agent based on environment variables
+KALSHI_ACCOUNT_NAME = os.getenv("KALSHI_ACCOUNT_NAME")
 USE_STRATEGY = os.getenv("USE_STRATEGY", "false").lower() == "true"
-active_agent = strategy_agent if USE_STRATEGY else root_agent
+
+# Priority: kalshi_strategy_agent > strategy_agent > root_agent
+if KALSHI_ACCOUNT_NAME:
+    active_agent = kalshi_strategy_agent
+elif USE_STRATEGY:
+    active_agent = strategy_agent
+else:
+    active_agent = root_agent
 
 # Get the directory where main.py is located
 AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -60,7 +68,7 @@ async def run_agent():
     """
     app_name = "agents"
     user_id = "tester"
-    message_text = "Help me to manage my portfolio."
+    message_text = "Review my current strategy and positions. Get the latest market data and then either create or update the strategies based on current market conditions. Note: This is an automatic message, so please proceed without asking follow-up questions."
 
     # Initialize Vertex AI Session Service
     session_service = VertexAiSessionService(
