@@ -1,6 +1,8 @@
 import os
 import base64
 import datetime
+import uuid
+from decimal import Decimal
 from typing import Optional
 import httpx
 from pydantic import BaseModel
@@ -11,9 +13,11 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.backends import default_backend
 from cryptography.exceptions import InvalidSignature
 from google.cloud import secretmanager
+from fastapi import HTTPException
 
 from models.kalshi_account import KalshiAccount
 from models.kalshi_market import KalshiMarket
+from models.account import AccountValue
 
 
 async def _get_kalshi_account(db: AsyncSession, account_name: str) -> KalshiAccount:
@@ -517,6 +521,13 @@ class GetKalshiMarketsResponse(BaseModel):
     total_count: int
 
 
+class UpdateKalshiAccountValueResponse(BaseModel):
+    """Response model for updating Kalshi account value"""
+    account_id: uuid.UUID
+    account_name: str
+    total_value: Decimal
+
+
 async def get_kalshi_markets(
     db: AsyncSession,
     exclude_tickers: Optional[list[str]] = None
@@ -648,5 +659,60 @@ async def create_kalshi_account_handler(
         key_id=new_account.key_id,
         secret_name=new_account.secret_name,
         is_demo=new_account.is_demo,
+    )
+
+
+async def update_kalshi_account_value_handler(
+    account_name: str, db: AsyncSession
+) -> UpdateKalshiAccountValueResponse:
+    """
+    Calculate and store the Kalshi account total value (balance + portfolio value).
+    
+    - Gets the balance and portfolio value from Kalshi API
+    - Calculates total value = balance + portfolio_value
+    - Stores it in the account_values table
+    
+    Args:
+        account_name: Name of the Kalshi account
+        db: Database session
+        
+    Returns:
+        UpdateKalshiAccountValueResponse with stored value details
+        
+    Raises:
+        HTTPException: If account not found or API error
+    """
+    # Get Kalshi account from database
+    account = await _get_kalshi_account(db, account_name)
+    
+    # Get balance data from Kalshi API
+    balance_data = await get_kalshi_account_balance(db, account_name)
+    
+    # Extract balance and portfolio_value from API response (both in cents)
+    balance_cents = balance_data.get('balance', 0)
+    portfolio_value_cents = balance_data.get('portfolio_value', 0)
+    
+    # Convert cents to dollars
+    balance = Decimal(str(balance_cents)) / Decimal('100')
+    portfolio_value = Decimal(str(portfolio_value_cents)) / Decimal('100')
+    
+    # Calculate total value = balance + portfolio_value
+    total_value = balance + portfolio_value
+    
+    # Create new AccountValue record
+    account_value = AccountValue(
+        account_id=account.account_id,
+        account_name=account.account_name,
+        total_value=total_value,
+    )
+    
+    db.add(account_value)
+    await db.commit()
+    await db.refresh(account_value)
+    
+    return UpdateKalshiAccountValueResponse(
+        account_id=account.account_id,
+        account_name=account.account_name,
+        total_value=total_value,
     )
 

@@ -39,10 +39,12 @@ from kalshi_utils import (
     GetKalshiBalanceResponse,
     GetKalshiMarketsResponse,
     KalshiMarketResponse,
+    UpdateKalshiAccountValueResponse,
     create_kalshi_account_handler,
     get_kalshi_account_balance,
     get_kalshi_account_positions,
     get_kalshi_markets,
+    update_kalshi_account_value_handler,
 )
 from database import close_db, get_db, init_db
 from models.account import Base
@@ -423,6 +425,28 @@ async def get_kalshi_positions(
     """
     positions_data = await get_kalshi_account_positions(db, account_name)
     return GetKalshiAccountPositionsResponse(**positions_data)
+
+
+@app.post("/kalshi/accounts/{account_name}/value", response_model=UpdateKalshiAccountValueResponse)
+async def update_kalshi_account_value(
+    account_name: str, db: AsyncSession = Depends(get_db)
+) -> UpdateKalshiAccountValueResponse:
+    """
+    Calculate and store the Kalshi account total value (balance + portfolio value).
+    
+    This endpoint:
+    1. Retrieves the balance and portfolio value from Kalshi API
+    2. Calculates total value = balance + portfolio_value
+    3. Stores it in the account_values table with a timestamp
+    
+    - account_name: Name of the Kalshi account
+    
+    Returns:
+    - account_id: UUID of the Kalshi account
+    - account_name: Name of the account
+    - total_value: Total account value in dollars (balance + portfolio value, converted from cents)
+    """
+    return await update_kalshi_account_value_handler(account_name, db)
 
 
 @app.get("/kalshi/markets", response_model=GetKalshiMarketsResponse)
