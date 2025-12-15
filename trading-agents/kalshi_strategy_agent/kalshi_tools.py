@@ -46,9 +46,8 @@ async def get_kalshi_balance() -> dict:
         response.raise_for_status()
         data = response.json()
     
-    # Convert cents to dollars
-    data["balance"] = data["balance"] / 100.0
-    data["portfolio_value"] = data["portfolio_value"] / 100.0
+    # Convert Decimal to float
+    data["balance"] = float(data["balance"])
     
     return data
 
