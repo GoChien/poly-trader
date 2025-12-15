@@ -125,24 +125,15 @@ async def list_new_markets(exclude_tickers: Optional[list[str]] = None) -> dict:
 async def get_kalshi_positions() -> dict:
     """Get all positions for a Kalshi account.
     
-    This tool retrieves all positions (market and event level) for a Kalshi account.
+    This tool retrieves all positions from the database for a Kalshi account.
     Only positions with non-zero values are returned.
     
     Returns:
         dict: A dictionary containing:
-            - market_positions (list[dict]): List of market-level positions with:
+            - positions (list[dict]): List of positions with:
                 - ticker (str): Market ticker
-                - position (int): Position size
-                - total_traded (int): Total amount traded
-                - market_exposure (float): Current market exposure in dollars
-                - realized_pnl (float): Realized profit/loss in dollars
-                - fees_paid (float): Total fees paid in dollars
-            - event_positions (list[dict]): List of event-level positions with:
-                - event_ticker (str): Event ticker
-                - total_cost (float): Total cost in dollars
-                - event_exposure (float): Current event exposure in dollars
-                - realized_pnl (float): Realized profit/loss in dollars
-                - fees_paid (float): Total fees paid in dollars
+                - side (str): Position side ('yes' or 'no')
+                - position (int): Absolute position size
     
     Raises:
         ValueError: If POLY_PAPER_URL or KALSHI_ACCOUNT_NAME not set in environment
@@ -163,19 +154,6 @@ async def get_kalshi_positions() -> dict:
         )
         response.raise_for_status()
         data = response.json()
-    
-    # Convert cents to dollars for market positions
-    for position in data.get("market_positions", []):
-        position["market_exposure"] = position["market_exposure"] / 100.0
-        position["realized_pnl"] = position["realized_pnl"] / 100.0
-        position["fees_paid"] = position["fees_paid"] / 100.0
-    
-    # Convert cents to dollars for event positions
-    for position in data.get("event_positions", []):
-        position["total_cost"] = position["total_cost"] / 100.0
-        position["event_exposure"] = position["event_exposure"] / 100.0
-        position["realized_pnl"] = position["realized_pnl"] / 100.0
-        position["fees_paid"] = position["fees_paid"] / 100.0
     
     return data
 

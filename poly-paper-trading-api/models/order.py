@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Integer, Numeric, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -45,3 +45,49 @@ class Order(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+class KalshiOrderSide(str, enum.Enum):
+    YES = "yes"
+    NO = "no"
+
+class KalshiOrderAction(str, enum.Enum):
+    BUY = "buy"
+    SELL = "sell"
+
+class KalshiOrderType(str, enum.Enum):
+    LIMIT = "limit"
+    MARKET = "market"
+
+class KalshiOrderStatus(str, enum.Enum):
+    OPEN = "open"
+    FILLED = "filled"
+    CANCELLED = "cancelled"
+
+class KalshiOrder(Base):
+    __tablename__ = "kalshi_orders"
+
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("accounts.account_id"), nullable=False, index=True
+    )
+    ticker: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    side: Mapped[KalshiOrderSide] = mapped_column(
+        Enum(KalshiOrderSide, native_enum=False, length=10), nullable=False
+    )
+    action: Mapped[KalshiOrderAction] = mapped_column(
+        Enum(KalshiOrderAction, native_enum=False, length=10), nullable=False
+    )
+    count: Mapped[int] = mapped_column(Integer, nullable=False)
+    type: Mapped[KalshiOrderType] = mapped_column(
+        Enum(KalshiOrderType, native_enum=False, length=10), nullable=False
+    )
+    status: Mapped[KalshiOrderStatus] = mapped_column(
+        Enum(KalshiOrderStatus, native_enum=False, length=20), nullable=False, default=KalshiOrderStatus.OPEN
+    )
+    # 1 <= x <= 99
+    price: Mapped[int] = mapped_column(Integer, nullable=False)
+    expiration_ts: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

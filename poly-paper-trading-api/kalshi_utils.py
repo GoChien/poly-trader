@@ -14,11 +14,11 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.backends import default_backend
 from cryptography.exceptions import InvalidSignature
 from google.cloud import secretmanager
-from fastapi import HTTPException
 
 from models.kalshi_account import KalshiAccount
 from models.kalshi_market import KalshiMarket
 from models.account import AccountValue
+from models.position import KalshiPosition
 
 
 async def _get_kalshi_account(db: AsyncSession, account_name: str) -> KalshiAccount:
@@ -211,7 +211,7 @@ async def get_kalshi_account_balance(db: AsyncSession, account_name: str) -> dic
 
 async def get_kalshi_account_positions(db: AsyncSession, account_name: str) -> dict:
     """
-    Get all portfolio positions, automatically handling pagination
+    Get all portfolio positions from the database
     
     Args:
         db: Database session
@@ -219,73 +219,30 @@ async def get_kalshi_account_positions(db: AsyncSession, account_name: str) -> d
         
     Returns:
         Dictionary containing:
-            - market_positions: Complete list of all market positions
-            - event_positions: Complete list of all event positions
+            - positions: List of positions with ticker, side, and absolute position
     """
     # Get account credentials from database
     account = await _get_kalshi_account(db, account_name)
     
-    # Get GCP project ID from environment
-    gcp_project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
-    if not gcp_project_id:
-        raise ValueError("GOOGLE_CLOUD_PROJECT environment variable must be set")
+    # Query positions from database
+    stmt = select(KalshiPosition).where(
+        KalshiPosition.account_id == account.account_id,
+        KalshiPosition.position != 0  # Only get non-zero positions
+    )
+    result = await db.execute(stmt)
+    positions = result.scalars().all()
     
-    # Load private key
-    private_key = _load_private_key(gcp_project_id, account.secret_name)
-    
-    # Determine base URL based on is_demo flag
-    base_url = "https://demo-api.kalshi.co" if account.is_demo else "https://api.elections.kalshi.com"
-    
-    # Use correct positions endpoint
-    path = '/trade-api/v2/portfolio/positions'
-    method = 'GET'
-    
-    # Collect all positions across pages
-    all_market_positions = []
-    all_event_positions = []
-    cursor = None
-    
-    async with httpx.AsyncClient() as client:
-        while True:
-            # Build request parameters
-            params = {
-                'limit': 1000,  # Use max limit for efficiency
-                'count_filter': 'position'  # Only get positions with non-zero position
-            }
-            if cursor:
-                params['cursor'] = cursor
-            
-            headers = _get_headers(private_key, account.key_id, method, path)
-            response = await client.get(
-                f"{base_url}{path}",
-                headers=headers,
-                params=params
-            )
-            try:
-                response.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                # Log the error response body for debugging
-                error_detail = response.text
-                print(f"Kalshi API Error (get_kalshi_account_positions): Status {response.status_code}")
-                print(f"Error detail: {error_detail}")
-                print(f"Request URL: {base_url}{path}")
-                print(f"Request params: {params}")
-                print(f"Account: {account_name}, is_demo: {account.is_demo}")
-                raise
-            data = response.json()
-            
-            # Accumulate positions
-            all_market_positions.extend(data.get('market_positions', []))
-            all_event_positions.extend(data.get('event_positions', []))
-            
-            # Check for more pages
-            cursor = data.get('cursor')
-            if not cursor:
-                break
+    # Format positions with ticker, side, and absolute position
+    formatted_positions = []
+    for pos in positions:
+        formatted_positions.append({
+            'ticker': pos.ticker,
+            'side': 'yes' if pos.position > 0 else 'no',
+            'position': abs(pos.position)
+        })
     
     return {
-        'market_positions': all_market_positions,
-        'event_positions': all_event_positions
+        'positions': formatted_positions
     }
 
 
@@ -425,40 +382,16 @@ class GetKalshiBalanceResponse(BaseModel):
     updated_ts: int  # Unix timestamp of the last update
 
 
-class MarketPosition(BaseModel):
-    """Model for a single market position"""
+class KalshiPositionItem(BaseModel):
+    """Model for a single Kalshi position"""
     ticker: str
-    total_traded: int
-    total_traded_dollars: str
-    position: int
-    market_exposure: int
-    market_exposure_dollars: str
-    realized_pnl: int
-    realized_pnl_dollars: str
-    resting_orders_count: int
-    fees_paid: int
-    fees_paid_dollars: str
-    last_updated_ts: str | None = None
-
-
-class EventPosition(BaseModel):
-    """Model for a single event position"""
-    event_ticker: str
-    total_cost: int
-    total_cost_dollars: str
-    total_cost_shares: int
-    event_exposure: int
-    event_exposure_dollars: str
-    realized_pnl: int
-    realized_pnl_dollars: str
-    fees_paid: int
-    fees_paid_dollars: str
+    side: str  # 'yes' or 'no'
+    position: int  # Absolute position size
 
 
 class GetKalshiAccountPositionsResponse(BaseModel):
     """Response model for Kalshi account positions endpoint"""
-    market_positions: list[MarketPosition]
-    event_positions: list[EventPosition]
+    positions: list[KalshiPositionItem]
 
 
 class KalshiMarketResponse(BaseModel):
