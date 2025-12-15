@@ -40,7 +40,7 @@ async def get_kalshi_balance() -> dict:
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
-            f"{poly_paper_url.rstrip('/')}/kalshi/balance",
+            f"{poly_paper_url.rstrip('/')}/accounts/balance",
             params={"account_name": kalshi_account_name},
         )
         response.raise_for_status()
