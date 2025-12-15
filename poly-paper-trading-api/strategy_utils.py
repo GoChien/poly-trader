@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import database
 from kalshi_utils import get_kalshi_account_positions, create_kalshi_order
-from models.kalshi_account import KalshiAccount
+from models.account import Account
 from models.strategy import Strategy, StrategySide
 
 
@@ -137,7 +137,7 @@ async def create_strategy_handler(
     """Create a new trading strategy."""
     try:
         # Verify the account exists
-        stmt = select(KalshiAccount).where(KalshiAccount.account_name == request.account_name)
+        stmt = select(Account).where(Account.account_name == request.account_name)
         result = await db.execute(stmt)
         account = result.scalar_one_or_none()
 
@@ -226,7 +226,7 @@ async def get_active_strategies_handler(
     """Get all active strategies for an account with current market data."""
     try:
         # Find the account by name
-        stmt = select(KalshiAccount).where(KalshiAccount.account_name == account_name)
+        stmt = select(Account).where(Account.account_name == account_name)
         result = await db.execute(stmt)
         account = result.scalar_one_or_none()
 
@@ -801,7 +801,7 @@ async def process_strategies_handler(
     """
     try:
         # Find the account by name
-        stmt = select(KalshiAccount).where(KalshiAccount.account_name == account_name)
+        stmt = select(Account).where(Account.account_name == account_name)
         result = await db.execute(stmt)
         account = result.scalar_one_or_none()
 
