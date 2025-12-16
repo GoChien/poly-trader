@@ -516,6 +516,9 @@ async def remove_kalshi_strategy(strategy_id: str) -> dict:
     This tool deactivates a strategy so it will no longer execute trades.
     The strategy is not deleted from the database - it's just expired for
     record-keeping and audit purposes.
+
+    Note: Removing a strategy will also sell all the positions related to this strategy
+    at market price.
     
     Use this when:
     - You want to stop a strategy from executing any more trades
