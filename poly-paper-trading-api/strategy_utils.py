@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import database
 from kalshi_utils import create_kalshi_order, fetch_market_data_for_tickers
 from models.account import Account
+from models.order import KalshiOrder, KalshiOrderStatus, KalshiOrderAction, KalshiOrderSide
 from models.position import KalshiPosition
 from models.strategy import Strategy, StrategySide
 
@@ -773,6 +774,33 @@ async def process_strategy_handler(
                 reason=f"Calculated size is 0: max_capital_risk={strategy.entry_max_capital_risk}, ask_price={ask_price}",
                 current_bid_price=bid_price,
                 current_ask_price=ask_price,
+            )
+        
+        # Check if there's already an open non-expired order for this strategy
+        # This prevents creating duplicate orders
+        current_ts = int(datetime.now(timezone.utc).timestamp())
+        order_side = KalshiOrderSide.YES if strategy.side == StrategySide.YES else KalshiOrderSide.NO
+        
+        existing_order_stmt = select(KalshiOrder).where(
+            KalshiOrder.account_id == account.account_id,
+            KalshiOrder.ticker == strategy.ticker,
+            KalshiOrder.side == order_side,
+            KalshiOrder.action == KalshiOrderAction.BUY,
+            KalshiOrder.status == KalshiOrderStatus.OPEN,
+            KalshiOrder.expiration_ts > current_ts
+        )
+        existing_order_result = await db.execute(existing_order_stmt)
+        existing_order = existing_order_result.scalar_one_or_none()
+        
+        if existing_order:
+            return ProcessStrategyResult(
+                strategy_id=strategy.strategy_id,
+                ticker=strategy.ticker,
+                action="skip",
+                reason=f"Already have an open buy order (ID: {existing_order.order_id}) for this ticker and side",
+                current_bid_price=bid_price,
+                current_ask_price=ask_price,
+                order_id=str(existing_order.order_id),
             )
         
         # Place buy order using Kalshi API
