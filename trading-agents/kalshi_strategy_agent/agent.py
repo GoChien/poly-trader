@@ -53,9 +53,11 @@ openai_model = LiteLlm(
     api_key=os.getenv("OPENAI_API_KEY")
 )
 
+gemini_model = 'gemini-3-pro-preview'
+
 root_agent = Agent(
     # model=openai_model,
-    model='gemini-2.5-pro',
+    model=gemini_model,
     name='kalshi_agent',
     description='Kalshi paper trading agent: research markets, create automated strategies (max 10, one per ticker), and manage portfolio.',
     instruction=KALSHI_AGENT_INSTRUCTION,
