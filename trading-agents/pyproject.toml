@@ -5,8 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "anthropic[vertex]>=0.75.0",
     "fastapi[standard]>=0.121.2",
-    "google-adk>=1.18.0",
+    "google-adk>=1.21.0",
     "httpx>=0.28.1",
     "litellm>=1.80.10",
     "py-clob-client>=0.28.0",

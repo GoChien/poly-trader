@@ -2,6 +2,8 @@ import os
 import textwrap
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.lite_llm import LiteLlm
+from google.adk.models.anthropic_llm import Claude
+from google.adk.models.registry import LLMRegistry
 from kalshi_strategy_agent.kalshi_tools import (
     create_kalshi_strategy,
     get_active_kalshi_strategies,
@@ -14,6 +16,7 @@ from kalshi_strategy_agent.kalshi_tools import (
 from agents.search_agent import google_search_agent
 from google.adk.tools.agent_tool import AgentTool
 
+LLMRegistry.register(Claude)
 
 KALSHI_AGENT_INSTRUCTION = textwrap.dedent("""\
     You are a Kalshi trading agent for a SIMULATED paper trading account.
@@ -53,11 +56,22 @@ openai_model = LiteLlm(
     api_key=os.getenv("OPENAI_API_KEY")
 )
 
+# Gemini via Vertex AI (direct string, no LiteLLM wrapper needed)
+# Region: global
 gemini_model = 'gemini-3-pro-preview'
+
+# Claude via LiteLLM with Vertex AI as provider
+# Requires: GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION env vars
+claude_model = LiteLlm(
+    model='vertex_ai/claude-sonnet-4@20250514', 
+    vertex_project=os.getenv("GOOGLE_CLOUD_PROJECT"),
+    vertex_location=os.getenv("GOOGLE_CLOUD_LOCATION", "global")
+)
 
 root_agent = Agent(
     # model=openai_model,
-    model=gemini_model,
+    # model=gemini_model,
+    model=claude_model,
     name='kalshi_agent',
     description='Kalshi paper trading agent: research markets, create automated strategies (max 10, one per ticker), and manage portfolio.',
     instruction=KALSHI_AGENT_INSTRUCTION,
