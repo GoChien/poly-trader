@@ -580,9 +580,13 @@ async def create_kalshi_order(
         count: Number of contracts (must be >= 1)
         expiration_ts: Optional expiration timestamp in seconds (Unix timestamp). 
                       Defaults to 5 minutes from now.
-        yes_price: Optional yes price in cents (1-99) for limit orders
-        no_price: Optional no price in cents (1-99) for limit orders
+        yes_price: Optional yes price in cents (1-99). Required for limit orders, 
+                  not needed for market orders.
+        no_price: Optional no price in cents (1-99). Required for limit orders,
+                 not needed for market orders.
         type: Order type - "market" or "limit" (default: "limit")
+              - "market": Execute at current market price (no price specification needed)
+              - "limit": Execute only if price conditions are met (requires yes_price or no_price)
         
     Returns:
         Dictionary containing the created order details
@@ -609,31 +613,63 @@ async def create_kalshi_order(
                 detail="Count must be at least 1"
             )
         
-        # 3. Calculate max cost for buy orders
-        if action == "buy":
-            # Determine which price to use based on side
-            if side == "yes":
-                if yes_price is None:
+        # 3. Determine price and validate based on order type
+        if type == "market":
+            # Market orders don't require price specification
+            # Use placeholder price (50 cents) for the order record
+            # Actual fill price will be determined at execution time
+            price_cents = 50
+        else:  # type == "limit"
+            # Limit orders require price specification
+            if action == "buy":
+                # Determine which price to use based on side
+                if side == "yes":
+                    if yes_price is None:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="yes_price is required for limit orders on yes side"
+                        )
+                    price_cents = yes_price
+                else:  # side == "no"
+                    if no_price is None:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="no_price is required for limit orders on no side"
+                        )
+                    price_cents = no_price
+                
+                # Validate price range
+                if price_cents < 1 or price_cents > 99:
                     raise HTTPException(
                         status_code=400,
-                        detail="yes_price is required for yes side orders"
+                        detail=f"Price must be between 1 and 99 cents, got {price_cents}"
                     )
-                price_cents = yes_price
-            else:  # side == "no"
-                if no_price is None:
+            else:  # action == "sell"
+                # For sell orders, we need to determine the price for the order record
+                if side == "yes":
+                    if yes_price is None:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="yes_price is required for limit orders on yes side"
+                        )
+                    price_cents = yes_price
+                else:  # side == "no"
+                    if no_price is None:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="no_price is required for limit orders on no side"
+                        )
+                    price_cents = no_price
+                
+                # Validate price range
+                if price_cents < 1 or price_cents > 99:
                     raise HTTPException(
                         status_code=400,
-                        detail="no_price is required for no side orders"
+                        detail=f"Price must be between 1 and 99 cents, got {price_cents}"
                     )
-                price_cents = no_price
-            
-            # Validate price range
-            if price_cents < 1 or price_cents > 99:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Price must be between 1 and 99 cents, got {price_cents}"
-                )
-            
+        
+        # 4. Check balance for buy orders (for limit orders, use limit price; for market orders, skip balance check)
+        if action == "buy" and type == "limit":
             # Calculate cost in dollars: (price_cents / 100) * count
             max_cost = Decimal(price_cents) / Decimal(100) * Decimal(count)
             
@@ -643,28 +679,12 @@ async def create_kalshi_order(
                     status_code=400,
                     detail=f"Insufficient balance. Required: ${max_cost}, Available: ${account.balance}"
                 )
-        else:  # action == "sell"
-            # For sell orders, we need to determine the price for the order record
-            if side == "yes":
-                if yes_price is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="yes_price is required for yes side orders"
-                    )
-                price_cents = yes_price
-            else:  # side == "no"
-                if no_price is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="no_price is required for no side orders"
-                    )
-                price_cents = no_price
         
-        # 4. Set default expiration if not provided (5 minutes from now)
+        # 5. Set default expiration if not provided (5 minutes from now)
         if expiration_ts is None:
             expiration_ts = int(DateTime.now().timestamp()) + 300  # 5 minutes
         
-        # 5. Create the order record
+        # 6. Create the order record
         order = KalshiOrder(
             account_id=account.account_id,
             ticker=ticker,
@@ -681,7 +701,7 @@ async def create_kalshi_order(
         await db.commit()
         await db.refresh(order)
         
-        # 6. Return success response
+        # 7. Return success response
         return {
             "order_id": str(order.order_id),
             "account_id": str(order.account_id),

@@ -646,14 +646,8 @@ async def process_strategy_handler(
             
             # Check stop loss
             if bid_price <= strategy.exit_stop_loss_price:
-                # Place sell order for all shares at bid price using Kalshi API
-                # Convert price from dollars to cents for Kalshi API
-                price_cents = int(round(float(bid_price) * 100))
-                
-                # Determine which price field to use based on strategy side
-                yes_price = price_cents if strategy.side == StrategySide.YES else None
-                no_price = price_cents if strategy.side == StrategySide.NO else None
-                
+                # Place market sell order to exit immediately at current market price
+                # No price specification needed for market orders
                 order_response = await create_kalshi_order(
                     db=db,
                     account_name=strategy.account_name,
@@ -661,16 +655,24 @@ async def process_strategy_handler(
                     side=strategy.side.value,  # "yes" or "no"
                     action="sell",
                     count=abs(position_size),  # Use absolute value for count
-                    yes_price=yes_price,
-                    no_price=no_price,
-                    type="limit",
+                    type="market",  # Market order for immediate execution at market price
                 )
+                
+                # Expire the strategy after stop loss is triggered
+                # Reload the strategy in the current session to ensure changes are persisted
+                strategy_stmt = select(Strategy).where(Strategy.strategy_id == strategy.strategy_id)
+                strategy_result = await db.execute(strategy_stmt)
+                strategy_to_expire = strategy_result.scalar_one()
+                
+                now = datetime.now(timezone.utc)
+                strategy_to_expire.valid_until_utc = now
+                await db.commit()
                 
                 return ProcessStrategyResult(
                     strategy_id=strategy.strategy_id,
                     ticker=strategy.ticker,
                     action="sell_stop_loss",
-                    reason=f"Stop loss triggered: bid price {bid_price} <= stop loss {strategy.exit_stop_loss_price}",
+                    reason=f"Stop loss triggered: bid price {bid_price} <= stop loss {strategy.exit_stop_loss_price}. Strategy expired.",
                     order_size=abs(position_size),
                     order_price=bid_price,
                     current_bid_price=bid_price,
