@@ -477,6 +477,9 @@ async def remove_strategy_handler(
     
     This effectively deactivates the strategy so it will no longer execute trades.
     The strategy is not deleted from the database, just expired.
+    
+    If the strategy has an open position, a market sell order is automatically placed
+    to close the position at the current market price.
     """
     try:
         # Find the existing strategy
@@ -503,10 +506,53 @@ async def remove_strategy_handler(
         strategy.valid_until_utc = now
         await db.commit()
 
+        # At the same time, sell all the positions related to this strategy at market price.
+        # First, get the account
+        account_stmt = select(Account).where(Account.account_name == strategy.account_name)
+        account_result = await db.execute(account_stmt)
+        account = account_result.scalar_one_or_none()
+        
+        order_id = None
+        if account:
+            # Check if there's a position for this ticker
+            position_stmt = select(KalshiPosition).where(
+                KalshiPosition.account_id == account.account_id,
+                KalshiPosition.ticker == strategy.ticker
+            )
+            position_result = await db.execute(position_stmt)
+            position = position_result.scalar_one_or_none()
+            
+            # If position exists and is non-zero, place a market sell order to close it
+            if position and position.position != 0:
+                # Determine side and count based on position
+                # Positive position = yes side, negative position = no side
+                if position.position > 0:
+                    side = "yes"
+                    count = position.position
+                else:
+                    side = "no"
+                    count = abs(position.position)
+                
+                # Place market sell order to close the position
+                order_response = await create_kalshi_order(
+                    db=db,
+                    account_name=strategy.account_name,
+                    ticker=strategy.ticker,
+                    side=side,
+                    action="sell",
+                    count=count,
+                    type="market",
+                )
+                order_id = order_response.get('order_id')
+
+        message = f"Strategy for {strategy.ticker} has been successfully removed (expired)"
+        if order_id:
+            message += f". Market sell order placed to close position (order_id: {order_id})"
+        
         return RemoveStrategyResponse(
             success=True,
             strategy_id=strategy.strategy_id,
-            message=f"Strategy for {strategy.ticker} has been successfully removed (expired)"
+            message=message
         )
 
     except HTTPException:
