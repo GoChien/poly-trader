@@ -1,5 +1,7 @@
+import os
 import textwrap
 from google.adk.agents.llm_agent import Agent
+from google.adk.models.lite_llm import LiteLlm
 from kalshi_strategy_agent.kalshi_tools import (
     create_kalshi_strategy,
     get_active_kalshi_strategies,
@@ -44,7 +46,15 @@ KALSHI_AGENT_INSTRUCTION = textwrap.dedent("""\
     """)
 
 
+# Initialize LiteLLM with OpenAI model
+# Note: Ensure OPENAI_API_KEY environment variable is set
+openai_model = LiteLlm(
+    model="openai/gpt-5.2",  # LiteLLM format: provider/model
+    api_key=os.getenv("OPENAI_API_KEY")
+)
+
 root_agent = Agent(
+    # model=openai_model,
     model='gemini-2.5-pro',
     name='kalshi_agent',
     description='Kalshi paper trading agent: research markets, create automated strategies (max 10, one per ticker), and manage portfolio.',

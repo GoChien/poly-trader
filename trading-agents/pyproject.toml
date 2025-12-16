@@ -8,6 +8,7 @@ dependencies = [
     "fastapi[standard]>=0.121.2",
     "google-adk>=1.18.0",
     "httpx>=0.28.1",
+    "litellm>=1.80.10",
     "py-clob-client>=0.28.0",
     "uvicorn>=0.38.0",
 ]
