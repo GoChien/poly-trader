@@ -41,6 +41,8 @@ from kalshi_utils import (
     GetKalshiMarketsResponse,
     KalshiMarketResponse,
     ProcessKalshiOrdersResponse,
+    SellPositionAtMarketRequest,
+    SellPositionAtMarketResponse,
     UpdateKalshiAccountValueResponse,
     create_kalshi_account_handler,
     get_kalshi_account_balance,
@@ -48,6 +50,7 @@ from kalshi_utils import (
     get_kalshi_account_value_history_handler,
     get_kalshi_markets,
     process_kalshi_orders_handler,
+    sell_position_at_market_handler,
     update_kalshi_account_value_handler,
 )
 from database import close_db, get_db, init_db
@@ -539,3 +542,41 @@ async def process_kalshi_orders(
     - total_processed: Total number of orders processed
     """
     return await process_kalshi_orders_handler(account_name, db)
+
+
+@app.post("/kalshi/positions/sell-at-market", response_model=SellPositionAtMarketResponse)
+async def sell_position_at_market(
+    request: SellPositionAtMarketRequest,
+    db: AsyncSession = Depends(get_db)
+) -> SellPositionAtMarketResponse:
+    """
+    Sell a position at market price (admin endpoint).
+    
+    This endpoint is for administrative use to manually close positions.
+    It will place a market sell order for the entire position.
+    
+    The endpoint:
+    1. Looks up the account by name
+    2. Checks if a position exists for the specified ticker
+    3. If a position exists, places a market sell order to close it entirely
+    
+    Parameters:
+    - account_name: Name of the Kalshi account
+    - ticker: Market ticker symbol
+    
+    Returns:
+    - success: Whether the operation was successful
+    - message: Confirmation message
+    - order_id: ID of the created market sell order (if position exists)
+    - side: Position side that was sold ("yes" or "no")
+    - count: Number of contracts sold
+    
+    Example:
+    ```json
+    {
+        "account_name": "my_account",
+        "ticker": "PRES2024"
+    }
+    ```
+    """
+    return await sell_position_at_market_handler(request, db)

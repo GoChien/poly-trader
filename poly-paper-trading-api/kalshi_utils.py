@@ -855,6 +855,21 @@ class ProcessKalshiOrdersResponse(BaseModel):
     total_processed: int  # Total number of orders processed
 
 
+class SellPositionAtMarketRequest(BaseModel):
+    """Request model for selling a position at market price"""
+    account_name: str
+    ticker: str
+
+
+class SellPositionAtMarketResponse(BaseModel):
+    """Response model for selling a position at market price"""
+    success: bool
+    message: str
+    order_id: Optional[str] = None
+    side: Optional[str] = None  # "yes" or "no"
+    count: Optional[int] = None  # Number of contracts sold
+
+
 async def get_kalshi_markets(
     db: AsyncSession,
     exclude_tickers: Optional[list[str]] = None
@@ -1100,4 +1115,89 @@ async def get_kalshi_account_value_history_handler(
         end_time=end_time,
         values=values,
     )
+
+
+async def sell_position_at_market_handler(
+    request: SellPositionAtMarketRequest,
+    db: AsyncSession
+) -> SellPositionAtMarketResponse:
+    """
+    Sell a position at market price (admin endpoint).
+    
+    This endpoint is for administrative use to close positions manually.
+    It will place a market sell order for the entire position.
+    
+    Args:
+        request: Request containing account_name and ticker
+        db: Database session
+        
+    Returns:
+        SellPositionAtMarketResponse with order details
+        
+    Raises:
+        HTTPException: If account or position not found
+    """
+    try:
+        # 1. Get the account by name
+        stmt = select(Account).where(Account.account_name == request.account_name)
+        result = await db.execute(stmt)
+        account = result.scalar_one_or_none()
+        
+        if not account:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Account '{request.account_name}' not found"
+            )
+        
+        # 2. Check if there's a position for this ticker
+        position_stmt = select(KalshiPosition).where(
+            KalshiPosition.account_id == account.account_id,
+            KalshiPosition.ticker == request.ticker
+        )
+        position_result = await db.execute(position_stmt)
+        position = position_result.scalar_one_or_none()
+        
+        # 3. If no position or position is zero, return message
+        if not position or position.position == 0:
+            return SellPositionAtMarketResponse(
+                success=True,
+                message=f"No position found for ticker '{request.ticker}' in account '{request.account_name}'",
+            )
+        
+        # 4. Determine side and count based on position
+        # Positive position = yes side, negative position = no side
+        if position.position > 0:
+            side = "yes"
+            count = position.position
+        else:
+            side = "no"
+            count = abs(position.position)
+        
+        # 5. Place market sell order to close the position
+        order_response = await create_kalshi_order(
+            db=db,
+            account_name=request.account_name,
+            ticker=request.ticker,
+            side=side,
+            action="sell",
+            count=count,
+            type="market",
+        )
+        order_id = order_response.get('order_id')
+        
+        return SellPositionAtMarketResponse(
+            success=True,
+            message=f"Market sell order placed for {count} {side.upper()} contracts on '{request.ticker}'",
+            order_id=order_id,
+            side=side,
+            count=count,
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to sell position at market: {str(e)}"
+        )
 
