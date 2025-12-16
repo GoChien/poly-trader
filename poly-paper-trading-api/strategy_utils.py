@@ -5,16 +5,43 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-import httpx
 from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import database
-from kalshi_utils import get_kalshi_account_positions, create_kalshi_order
+from kalshi_utils import create_kalshi_order, fetch_market_data_for_tickers
 from models.account import Account
+from models.position import KalshiPosition
 from models.strategy import Strategy, StrategySide
+
+
+def _convert_market_data_to_decimals(raw_market_data: dict) -> dict:
+    """
+    Convert raw Kalshi market data (with prices in cents) to Decimal dollars.
+    
+    Args:
+        raw_market_data: Raw market data from Kalshi API with integer cent prices
+        
+    Returns:
+        Dictionary with prices converted to Decimal dollars and other fields preserved
+    """
+    # Use dollar fields directly from API if available, otherwise convert cents to dollars
+    yes_bid_dollars = raw_market_data.get('yes_bid_dollars')
+    yes_ask_dollars = raw_market_data.get('yes_ask_dollars')
+    no_bid_dollars = raw_market_data.get('no_bid_dollars')
+    no_ask_dollars = raw_market_data.get('no_ask_dollars')
+    
+    return {
+        'yes_bid': Decimal(str(yes_bid_dollars)) if yes_bid_dollars is not None else None,
+        'yes_ask': Decimal(str(yes_ask_dollars)) if yes_ask_dollars is not None else None,
+        'no_bid': Decimal(str(no_bid_dollars)) if no_bid_dollars is not None else None,
+        'no_ask': Decimal(str(no_ask_dollars)) if no_ask_dollars is not None else None,
+        'status': raw_market_data.get('status'),
+        'close_time': raw_market_data.get('close_time'),
+        'expected_expiration_time': raw_market_data.get('expected_expiration_time'),
+    }
 
 
 class CreateStrategyRequest(BaseModel):
@@ -260,12 +287,13 @@ async def get_active_strategies_handler(
 
         # Fetch market data for all tickers
         tickers = [s.ticker for s in strategies]
-        market_data_map = await _fetch_market_data_for_tickers(tickers)
+        raw_market_data_map = await fetch_market_data_for_tickers(tickers)
 
         # Build response with market data
         strategies_with_market_data = []
         for s in strategies:
-            market_data = market_data_map.get(s.ticker, {})
+            raw_market_data = raw_market_data_map.get(s.ticker, {})
+            market_data = _convert_market_data_to_decimals(raw_market_data) if raw_market_data else {}
             
             # Extract market data fields
             yes_ask = market_data.get('yes_ask')
@@ -321,67 +349,6 @@ async def get_active_strategies_handler(
         raise HTTPException(
             status_code=500, detail=f"Failed to get active strategies: {str(e)}"
         )
-
-
-async def _fetch_market_data_for_tickers(tickers: list[str]) -> dict[str, dict]:
-    """
-    Fetch current market data for a list of tickers from Kalshi API.
-    
-    Args:
-        tickers: List of ticker symbols to fetch data for
-        
-    Returns:
-        Dictionary mapping ticker to market data dict with fields:
-        - yes_bid, yes_ask, no_bid, no_ask (as Decimal)
-        - status, close_time, expected_expiration_time
-    """
-    if not tickers:
-        return {}
-    
-    base_url = "https://api.elections.kalshi.com"
-    path = '/trade-api/v2/markets'
-    
-    market_data_map = {}
-    
-    # Batch tickers to avoid URL length limits
-    batch_size = 100
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        for i in range(0, len(tickers), batch_size):
-            batch_tickers = tickers[i:i + batch_size]
-            
-            try:
-                params = {'tickers': ','.join(batch_tickers)}
-                response = await client.get(f"{base_url}{path}", params=params)
-                response.raise_for_status()
-                data = response.json()
-                
-                # Process each market and convert prices to Decimal
-                for market in data.get('markets', []):
-                    ticker = market.get('ticker')
-                    if not ticker:
-                        continue
-                    
-                    # Use dollar fields directly from API (no conversion needed)
-                    yes_bid_dollars = market.get('yes_bid_dollars')
-                    yes_ask_dollars = market.get('yes_ask_dollars')
-                    no_bid_dollars = market.get('no_bid_dollars')
-                    no_ask_dollars = market.get('no_ask_dollars')
-                    
-                    market_data_map[ticker] = {
-                        'yes_bid': Decimal(str(yes_bid_dollars)) if yes_bid_dollars is not None else None,
-                        'yes_ask': Decimal(str(yes_ask_dollars)) if yes_ask_dollars is not None else None,
-                        'no_bid': Decimal(str(no_bid_dollars)) if no_bid_dollars is not None else None,
-                        'no_ask': Decimal(str(no_ask_dollars)) if no_ask_dollars is not None else None,
-                        'status': market.get('status'),
-                        'close_time': market.get('close_time'),
-                        'expected_expiration_time': market.get('expected_expiration_time'),
-                    }
-            except Exception as e:
-                # Log error but continue processing other batches
-                print(f"Error fetching market data for batch {i//batch_size}: {str(e)}")
-                continue
-    
-    return market_data_map
 
 
 async def update_strategy_handler(
@@ -565,7 +532,8 @@ class ProcessStrategyResult(BaseModel):
 
 
 async def process_strategy_handler(
-    strategy: Strategy, db: AsyncSession, position_map: dict[str, dict]
+    strategy: Strategy, db: AsyncSession,
+    market_data_map: dict[str, dict]
 ) -> ProcessStrategyResult:
     """
     Process a single trading strategy and execute trades based on entry/exit rules.
@@ -585,11 +553,10 @@ async def process_strategy_handler(
     Args:
         strategy: Strategy to process
         db: Database session
-        position_map: Dictionary mapping ticker -> Kalshi position data
+        market_data_map: Dictionary mapping ticker -> market data (prices, status, etc.)
     """
     try:
-        # 1. Get market prices (both bid and ask)
-        market_data_map = await _fetch_market_data_for_tickers([strategy.ticker])
+        # 1. Get market data from the pre-fetched map
         market_data = market_data_map.get(strategy.ticker)
         
         if not market_data:
@@ -611,9 +578,27 @@ async def process_strategy_handler(
                 detail=f"Market prices not available for ticker '{strategy.ticker}' for side {strategy.side}"
             )
 
-        # 2. Get existing position for this ticker from position_map
-        kalshi_position = position_map.get(strategy.ticker)
-        position_size = kalshi_position['position'] if kalshi_position else 0
+        # 2. Get existing position for this ticker from database
+        # First get the account_id
+        account_stmt = select(Account).where(Account.account_name == strategy.account_name)
+        account_result = await db.execute(account_stmt)
+        account = account_result.scalar_one_or_none()
+        
+        if not account:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Account '{strategy.account_name}' not found"
+            )
+        
+        # Query KalshiPosition table
+        position_stmt = select(KalshiPosition).where(
+            KalshiPosition.account_id == account.account_id,
+            KalshiPosition.ticker == strategy.ticker
+        )
+        position_result = await db.execute(position_stmt)
+        kalshi_position = position_result.scalar_one_or_none()
+        
+        position_size = kalshi_position.position if kalshi_position else 0
         position_side = StrategySide.YES if position_size >= 0 else StrategySide.NO
         
         # 3. If already have a position, check exit rules first
@@ -834,19 +819,22 @@ async def process_strategies_handler(
                 results=[],
             )
         
-        # Get all positions for this account from Kalshi API
-        positions_data = await get_kalshi_account_positions(db, account_name)
-        market_positions = positions_data.get('market_positions', [])
+        # Fetch market data for all tickers at once
+        tickers = [strategy.ticker for strategy in strategies]
+        raw_market_data_map = await fetch_market_data_for_tickers(tickers)
         
-        # Create a mapping of ticker -> position for quick lookup
-        position_map = {pos['ticker']: pos for pos in market_positions}
+        # Convert all market data to Decimal format
+        market_data_map = {
+            ticker: _convert_market_data_to_decimals(raw_data)
+            for ticker, raw_data in raw_market_data_map.items()
+        }
         
         # Process each strategy in parallel with separate sessions
         # Each strategy gets its own session to avoid concurrent commit/rollback conflicts
         async def process_with_new_session(strategy: Strategy) -> ProcessStrategyResult:
             async with database.async_session_maker() as strategy_db:
-                return await process_strategy_handler(strategy, strategy_db, position_map)
-        
+                return await process_strategy_handler(strategy, strategy_db, market_data_map)
+
         tasks = [process_with_new_session(strategy) for strategy in strategies]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 

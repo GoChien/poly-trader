@@ -40,12 +40,14 @@ from kalshi_utils import (
     GetKalshiBalanceResponse,
     GetKalshiMarketsResponse,
     KalshiMarketResponse,
+    ProcessKalshiOrdersResponse,
     UpdateKalshiAccountValueResponse,
     create_kalshi_account_handler,
     get_kalshi_account_balance,
     get_kalshi_account_positions,
     get_kalshi_account_value_history_handler,
     get_kalshi_markets,
+    process_kalshi_orders_handler,
     update_kalshi_account_value_handler,
 )
 from database import close_db, get_db, init_db
@@ -508,3 +510,32 @@ async def get_markets(
         markets=[KalshiMarketResponse(**m) for m in markets_data['markets']],
         total_count=markets_data['total_count']
     )
+
+
+@app.post("/kalshi/orders/process", response_model=ProcessKalshiOrdersResponse)
+async def process_kalshi_orders(
+    account_name: str,
+    db: AsyncSession = Depends(get_db)
+) -> ProcessKalshiOrdersResponse:
+    """
+    Process all non-expired open Kalshi orders for an account.
+    
+    For each order, this endpoint:
+    1. Fetches current market prices from Kalshi API
+    2. Determines if the order can be filled:
+       - Limit orders: fills if market price satisfies limit price
+       - Market orders: always fills at current market price
+    3. Fills qualifying orders in atomic transactions:
+       - Checks balance (for buy orders) or position (for sell orders)
+       - Updates balance and positions
+       - Marks order as filled or cancelled
+    
+    Parameters:
+    - account_name: Name of the Kalshi account
+    
+    Returns:
+    - filled_orders: List of order IDs that were successfully filled
+    - cancelled_orders: List of order IDs that were cancelled (e.g., insufficient balance)
+    - total_processed: Total number of orders processed
+    """
+    return await process_kalshi_orders_handler(account_name, db)

@@ -6,6 +6,7 @@ from datetime import datetime as DateTime
 from decimal import Decimal
 from typing import Optional
 import httpx
+from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,8 +18,9 @@ from google.cloud import secretmanager
 
 from models.kalshi_account import KalshiAccount
 from models.kalshi_market import KalshiMarket
-from models.account import AccountValue
+from models.account import Account, AccountValue
 from models.position import KalshiPosition
+from models.order import KalshiOrder, KalshiOrderSide, KalshiOrderAction, KalshiOrderType, KalshiOrderStatus
 
 
 async def _get_kalshi_account(db: AsyncSession, account_name: str) -> KalshiAccount:
@@ -209,6 +211,60 @@ async def get_kalshi_account_balance(db: AsyncSession, account_name: str) -> dic
         return response.json()
 
 
+async def fetch_market_data_for_tickers(tickers: list[str]) -> dict[str, dict]:
+    """
+    Fetch current market data for a list of tickers from Kalshi API.
+    
+    This is a shared utility function that fetches market data from the public Kalshi API.
+    It handles batching (100 tickers at a time) and error handling for each batch.
+    
+    Args:
+        tickers: List of ticker symbols to fetch data for
+        
+    Returns:
+        Dictionary mapping ticker to market data dict. The market data dict contains
+        all raw fields from the Kalshi API response, including:
+        - yes_bid, yes_ask, no_bid, no_ask (integers, in cents)
+        - yes_bid_dollars, yes_ask_dollars, no_bid_dollars, no_ask_dollars (strings)
+        - status, close_time, expected_expiration_time, etc.
+        
+    Example:
+        market_data = await fetch_market_data_for_tickers(['TICKER1', 'TICKER2'])
+        yes_ask_cents = market_data['TICKER1']['yes_ask']  # integer cents
+    """
+    if not tickers:
+        return {}
+    
+    base_url = "https://api.elections.kalshi.com"
+    path = '/trade-api/v2/markets'
+    
+    market_data_map = {}
+    
+    # Batch tickers to avoid URL length limits
+    batch_size = 100
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for i in range(0, len(tickers), batch_size):
+            batch_tickers = tickers[i:i + batch_size]
+            
+            try:
+                params = {'tickers': ','.join(batch_tickers)}
+                response = await client.get(f"{base_url}{path}", params=params)
+                response.raise_for_status()
+                data = response.json()
+                
+                # Store the complete market data for each ticker
+                for market in data.get('markets', []):
+                    ticker = market.get('ticker')
+                    if ticker:
+                        market_data_map[ticker] = market
+            except Exception as e:
+                # Log error but continue processing other batches
+                print(f"Error fetching market data for batch {i//batch_size}: {str(e)}")
+                continue
+    
+    return market_data_map
+
+
 async def get_kalshi_account_positions(db: AsyncSession, account_name: str) -> dict:
     """
     Get all portfolio positions from the database
@@ -246,6 +302,249 @@ async def get_kalshi_account_positions(db: AsyncSession, account_name: str) -> d
     }
 
 
+async def process_kalshi_orders_handler(
+    account_name: str,
+    db: AsyncSession,
+) -> dict:
+    """
+    Process all non-expired open orders for a Kalshi account.
+    
+    For each order:
+    - Checks current market price from Kalshi API
+    - Determines if order can be filled (limit vs market)
+    - Fills order in a single transaction:
+      1. Check balance (cancel if insufficient for buy orders)
+      2. Deduct balance (for buy) or check position (for sell)
+      3. Update/create position
+      4. Mark order as filled
+    
+    Args:
+        account_name: Name of the Kalshi account
+        db: Database session
+        
+    Returns:
+        Dictionary containing:
+            - filled_orders: List of order IDs that were filled
+            - cancelled_orders: List of order IDs that were cancelled (insufficient balance)
+            - total_processed: Total number of orders processed
+            
+    Raises:
+        HTTPException: If account not found or other errors
+    """
+    try:
+        # 1. Get the account by name
+        stmt = select(Account).where(Account.account_name == account_name)
+        result = await db.execute(stmt)
+        account = result.scalar_one_or_none()
+        
+        if not account:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Account '{account_name}' not found"
+            )
+        
+        # 2. Get all non-expired open orders for this account
+        current_ts = int(DateTime.now().timestamp())
+        stmt = select(KalshiOrder).where(
+            KalshiOrder.account_id == account.account_id,
+            KalshiOrder.status == KalshiOrderStatus.OPEN,
+            KalshiOrder.expiration_ts > current_ts
+        )
+        result = await db.execute(stmt)
+        orders = result.scalars().all()
+        
+        filled_orders = []
+        cancelled_orders = []
+        
+        # 3. Get current market prices for all unique tickers
+        unique_tickers = list(set(order.ticker for order in orders))
+        if not unique_tickers:
+            return {
+                "filled_orders": [],
+                "cancelled_orders": [],
+                "total_processed": 0
+            }
+        
+        # Fetch market data from Kalshi API using shared utility
+        market_map = await fetch_market_data_for_tickers(unique_tickers)
+        
+        # 4. Process each order
+        for order in orders:
+            market = market_map.get(order.ticker)
+            if not market:
+                # Skip if market data not available
+                continue
+            
+            # Determine if order can be filled
+            can_fill = False
+            fill_price_cents = None
+            
+            if order.type == KalshiOrderType.MARKET:
+                # Market orders always fill at current market price
+                can_fill = True
+                # Use ask price for buys, bid price for sells
+                if order.action == KalshiOrderAction.BUY:
+                    fill_price_cents = market['yes_ask'] if order.side == KalshiOrderSide.YES else market['no_ask']
+                else:  # SELL
+                    fill_price_cents = market['yes_bid'] if order.side == KalshiOrderSide.YES else market['no_bid']
+            
+            elif order.type == KalshiOrderType.LIMIT:
+                # Limit orders fill if market price is favorable
+                if order.action == KalshiOrderAction.BUY:
+                    # Buy order fills if ask price <= limit price
+                    market_price = market['yes_ask'] if order.side == KalshiOrderSide.YES else market['no_ask']
+                    if market_price <= order.price:
+                        can_fill = True
+                        fill_price_cents = market_price
+                else:  # SELL
+                    # Sell order fills if bid price >= limit price
+                    market_price = market['yes_bid'] if order.side == KalshiOrderSide.YES else market['no_bid']
+                    if market_price >= order.price:
+                        can_fill = True
+                        fill_price_cents = market_price
+            
+            if not can_fill:
+                continue
+            
+            # 5. Fill the order in a transaction
+            try:
+                await _fill_kalshi_order(db, account, order, fill_price_cents)
+                filled_orders.append(str(order.order_id))
+            except OrderFillException as e:
+                # Order cannot be filled - cancel it in a separate transaction
+                order.status = KalshiOrderStatus.CANCELLED
+                await db.commit()
+                cancelled_orders.append(str(order.order_id))
+        
+        return {
+            "filled_orders": filled_orders,
+            "cancelled_orders": cancelled_orders,
+            "total_processed": len(filled_orders) + len(cancelled_orders)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process orders: {str(e)}"
+        )
+
+
+class OrderFillException(Exception):
+    """Exception raised when an order cannot be filled and should be cancelled"""
+    pass
+
+
+async def _fill_kalshi_order(
+    db: AsyncSession,
+    account: Account,
+    order: KalshiOrder,
+    fill_price_cents: int
+) -> None:
+    """
+    Fill a single Kalshi order within a transaction.
+    
+    All operations are performed atomically within a single transaction:
+    1. Lock and refresh account/position rows
+    2. Check balance (for buy) or position (for sell)
+    3. Update balance and position
+    4. Mark order as filled
+    
+    If the order cannot be filled (insufficient balance/position), it raises
+    OrderFillException and the order will be cancelled separately.
+    
+    Args:
+        db: Database session
+        account: Account object
+        order: Order to fill
+        fill_price_cents: Fill price in cents (1-99)
+        
+    Raises:
+        OrderFillException: If insufficient balance or position (order should be cancelled)
+    """
+    # Refresh account to get latest balance with row lock (FOR UPDATE)
+    stmt = select(Account).where(Account.account_id == account.account_id).with_for_update()
+    result = await db.execute(stmt)
+    locked_account = result.scalar_one()
+    
+    # Calculate cost/proceeds in dollars
+    cost_or_proceeds = Decimal(fill_price_cents) / Decimal(100) * Decimal(order.count)
+    
+    if order.action == KalshiOrderAction.BUY:
+        # Check if sufficient balance
+        if locked_account.balance < cost_or_proceeds:
+            raise OrderFillException(
+                f"Insufficient balance for order {order.order_id}. Required: ${cost_or_proceeds}, Available: ${locked_account.balance}"
+            )
+        
+        # Deduct balance
+        locked_account.balance -= cost_or_proceeds
+        
+        # Update/create position
+        # Positive for yes, negative for no
+        position_change = order.count if order.side == KalshiOrderSide.YES else -order.count
+        
+        # Check if position exists (lock it)
+        stmt = select(KalshiPosition).where(
+            KalshiPosition.ticker == order.ticker,
+            KalshiPosition.account_id == locked_account.account_id
+        ).with_for_update()
+        result = await db.execute(stmt)
+        position = result.scalar_one_or_none()
+        
+        if position:
+            position.position += position_change
+        else:
+            position = KalshiPosition(
+                ticker=order.ticker,
+                account_id=locked_account.account_id,
+                position=position_change
+            )
+            db.add(position)
+    
+    else:  # SELL
+        # Check if we have the position to sell (lock it)
+        stmt = select(KalshiPosition).where(
+            KalshiPosition.ticker == order.ticker,
+            KalshiPosition.account_id == locked_account.account_id
+        ).with_for_update()
+        result = await db.execute(stmt)
+        position = result.scalar_one_or_none()
+        
+        # Calculate required position
+        # If selling yes, we need positive position >= count
+        # If selling no, we need negative position <= -count (abs value >= count)
+        required_position = order.count if order.side == KalshiOrderSide.YES else -order.count
+        
+        if not position:
+            raise OrderFillException(
+                f"No position to sell for order {order.order_id}"
+            )
+        
+        # Check if we have enough position
+        if order.side == KalshiOrderSide.YES and position.position < order.count:
+            raise OrderFillException(
+                f"Insufficient yes position for order {order.order_id}. Required: {order.count}, Available: {position.position}"
+            )
+        elif order.side == KalshiOrderSide.NO and position.position > -order.count:
+            raise OrderFillException(
+                f"Insufficient no position for order {order.order_id}. Required: {order.count}, Available: {abs(position.position)}"
+            )
+        
+        # Update position (reduce)
+        position.position -= required_position
+        
+        # Add proceeds to balance
+        locked_account.balance += cost_or_proceeds
+    
+    # Mark order as filled
+    order.status = KalshiOrderStatus.FILLED
+    
+    # Commit this transaction
+    await db.commit()
+
+
 async def create_kalshi_order(
     db: AsyncSession,
     account_name: str,
@@ -259,9 +558,10 @@ async def create_kalshi_order(
     type: str = "limit",
 ) -> dict:
     """
-    Create an order on Kalshi using their API.
+    Create a paper trading order for Kalshi markets.
     
-    Reference: https://docs.kalshi.com/api-reference/orders/create-order
+    This is the paper trading version that simulates orders without calling the Kalshi API.
+    It checks account balance and creates an order record in the database.
     
     Args:
         db: Database session
@@ -271,90 +571,133 @@ async def create_kalshi_order(
         action: "buy" or "sell"
         count: Number of contracts (must be >= 1)
         expiration_ts: Optional expiration timestamp in seconds (Unix timestamp). 
-                      Defaults to 10 minutes from now for limit orders. Not used for market orders.
+                      Defaults to 5 minutes from now.
         yes_price: Optional yes price in cents (1-99) for limit orders
         no_price: Optional no price in cents (1-99) for limit orders
-        type: Order type - "market" or "limit" (default: "market")
+        type: Order type - "market" or "limit" (default: "limit")
         
     Returns:
-        Dictionary containing the created order details with fields:
-            - order_id (str): Unique order ID
-            - ticker (str): Market ticker
-            - side (str): "yes" or "no"
-            - action (str): "buy" or "sell"
-            - type (str): "limit" or "market"
-            - status (str): "resting", "canceled", or "executed"
-            - yes_price (int): Yes price in cents
-            - no_price (int): No price in cents
-            - yes_price_dollars (str): Yes price in dollars
-            - no_price_dollars (str): No price in dollars
-            - fill_count (int): Number of contracts filled
-            - remaining_count (int): Number of contracts remaining
-            - initial_count (int): Initial order size
-            - created_time (str): ISO timestamp
+        Dictionary containing the created order details
             
     Raises:
-        ValueError: If account not found or invalid parameters
-        httpx.HTTPStatusError: If the API request fails
+        HTTPException: If account not found, insufficient balance, or invalid parameters
     """
-    # Get account credentials from database
-    account = await _get_kalshi_account(db, account_name)
-    
-    # Set default expiration to 10 minutes from now for limit orders if not provided
-    if type == "limit" and expiration_ts is None:
-        expiration_ts = int(datetime.datetime.now().timestamp() + 600)
-    
-    # Get GCP project ID from environment
-    gcp_project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
-    if not gcp_project_id:
-        raise ValueError("GOOGLE_CLOUD_PROJECT environment variable must be set")
-    
-    # Load private key
-    private_key = _load_private_key(gcp_project_id, account.secret_name)
-    
-    # Determine base URL based on is_demo flag
-    base_url = "https://demo-api.kalshi.co" if account.is_demo else "https://api.elections.kalshi.com"
-    
-    # Build order payload
-    path = '/trade-api/v2/portfolio/orders'
-    method = 'POST'
-    
-    payload = {
-        "ticker": ticker,
-        "side": side,
-        "action": action,
-        "count": count,
-        "type": type,
-    }
-    
-    # Add optional fields
-    # Only add expiration_ts for limit orders
-    if type == "limit" and expiration_ts:
-        payload["expiration_ts"] = expiration_ts
-    if yes_price is not None:
-        payload["yes_price"] = yes_price
-    if no_price is not None:
-        payload["no_price"] = no_price
-    
-    # Get authentication headers
-    headers = _get_headers(private_key, account.key_id, method, path)
-    headers['Content-Type'] = 'application/json'
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{base_url}{path}",
-            headers=headers,
-            json=payload
+    try:
+        # 1. Get the account by name
+        stmt = select(Account).where(Account.account_name == account_name)
+        result = await db.execute(stmt)
+        account = result.scalar_one_or_none()
+        
+        if not account:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Account '{account_name}' not found"
+            )
+        
+        # 2. Validate inputs
+        if count < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Count must be at least 1"
+            )
+        
+        # 3. Calculate max cost for buy orders
+        if action == "buy":
+            # Determine which price to use based on side
+            if side == "yes":
+                if yes_price is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="yes_price is required for yes side orders"
+                    )
+                price_cents = yes_price
+            else:  # side == "no"
+                if no_price is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="no_price is required for no side orders"
+                    )
+                price_cents = no_price
+            
+            # Validate price range
+            if price_cents < 1 or price_cents > 99:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Price must be between 1 and 99 cents, got {price_cents}"
+                )
+            
+            # Calculate cost in dollars: (price_cents / 100) * count
+            max_cost = Decimal(price_cents) / Decimal(100) * Decimal(count)
+            
+            # Check if account has sufficient balance
+            if account.balance < max_cost:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Insufficient balance. Required: ${max_cost}, Available: ${account.balance}"
+                )
+        else:  # action == "sell"
+            # For sell orders, we need to determine the price for the order record
+            if side == "yes":
+                if yes_price is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="yes_price is required for yes side orders"
+                    )
+                price_cents = yes_price
+            else:  # side == "no"
+                if no_price is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="no_price is required for no side orders"
+                    )
+                price_cents = no_price
+        
+        # 4. Set default expiration if not provided (5 minutes from now)
+        if expiration_ts is None:
+            expiration_ts = int(DateTime.now().timestamp()) + 300  # 5 minutes
+        
+        # 5. Create the order record
+        order = KalshiOrder(
+            account_id=account.account_id,
+            ticker=ticker,
+            side=KalshiOrderSide(side),
+            action=KalshiOrderAction(action),
+            count=count,
+            type=KalshiOrderType(type),
+            status=KalshiOrderStatus.OPEN,
+            price=price_cents,
+            expiration_ts=expiration_ts,
         )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            # Log the error response body for debugging
-            error_detail = response.text
-            print(f"Kalshi API Error: {error_detail}")
-            print(f"Request payload: {payload}")
-            raise
-        return response.json()
+        
+        db.add(order)
+        await db.commit()
+        await db.refresh(order)
+        
+        # 6. Return success response
+        return {
+            "order_id": str(order.order_id),
+            "account_id": str(order.account_id),
+            "ticker": order.ticker,
+            "side": order.side.value,
+            "action": order.action.value,
+            "count": order.count,
+            "type": order.type.value,
+            "status": order.status.value,
+            "price": order.price,
+            "price_dollars": f"{order.price / 100:.2f}",
+            "expiration_ts": order.expiration_ts,
+            "created_at": order.created_at.isoformat(),
+        }
+        
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create order: {str(e)}"
+        )
 
 
 # Request/Response Models
@@ -475,6 +818,13 @@ class GetKalshiAccountValueHistoryResponse(BaseModel):
     start_time: DateTime
     end_time: DateTime
     values: list[KalshiAccountValueRecord]
+
+
+class ProcessKalshiOrdersResponse(BaseModel):
+    """Response model for processing Kalshi orders"""
+    filled_orders: list[str]  # List of order IDs that were filled
+    cancelled_orders: list[str]  # List of order IDs that were cancelled
+    total_processed: int  # Total number of orders processed
 
 
 async def get_kalshi_markets(
