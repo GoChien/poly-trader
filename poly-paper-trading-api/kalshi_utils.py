@@ -271,14 +271,22 @@ async def get_kalshi_account_positions(db: AsyncSession, account_name: str) -> d
     
     Args:
         db: Database session
-        account_name: Name of the Kalshi account
+        account_name: Name of the account
         
     Returns:
         Dictionary containing:
             - positions: List of positions with ticker, side, and absolute position
     """
-    # Get account credentials from database
-    account = await _get_kalshi_account(db, account_name)
+    # Get account from database
+    stmt = select(Account).where(Account.account_name == account_name)
+    result = await db.execute(stmt)
+    account = result.scalar_one_or_none()
+    
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Account '{account_name}' not found"
+        )
     
     # Query positions from database
     stmt = select(KalshiPosition).where(
