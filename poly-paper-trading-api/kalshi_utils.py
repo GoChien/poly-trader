@@ -1008,14 +1008,16 @@ async def update_kalshi_account_value_handler(
     account_name: str, db: AsyncSession
 ) -> UpdateKalshiAccountValueResponse:
     """
-    Calculate and store the Kalshi account total value (balance + portfolio value).
+    Calculate and store the Kalshi account total value (balance + position values).
     
-    - Gets the balance and portfolio value from Kalshi API
-    - Calculates total value = balance + portfolio_value
+    - Gets the account balance from the Account table
+    - Gets all Kalshi positions for the account
+    - Fetches market prices and calculates position values using midpoint pricing
+    - Calculates total value = balance + sum(position values)
     - Stores it in the account_values table
     
     Args:
-        account_name: Name of the Kalshi account
+        account_name: Name of the account
         db: Database session
         
     Returns:
@@ -1024,22 +1026,67 @@ async def update_kalshi_account_value_handler(
     Raises:
         HTTPException: If account not found or API error
     """
-    # Get Kalshi account from database
-    account = await _get_kalshi_account(db, account_name)
+    # Get account from database
+    stmt = select(Account).where(Account.account_name == account_name)
+    result = await db.execute(stmt)
+    account = result.scalar_one_or_none()
     
-    # Get balance data from Kalshi API
-    balance_data = await get_kalshi_account_balance(db, account_name)
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Account '{account_name}' not found"
+        )
     
-    # Extract balance and portfolio_value from API response (both in cents)
-    balance_cents = balance_data.get('balance', 0)
-    portfolio_value_cents = balance_data.get('portfolio_value', 0)
+    # Get account balance
+    account_balance = account.balance
     
-    # Convert cents to dollars
-    balance = Decimal(str(balance_cents)) / Decimal('100')
-    portfolio_value = Decimal(str(portfolio_value_cents)) / Decimal('100')
+    # Get all Kalshi positions for this account
+    stmt = select(KalshiPosition).where(
+        KalshiPosition.account_id == account.account_id,
+        KalshiPosition.position != 0  # Only get non-zero positions
+    )
+    result = await db.execute(stmt)
+    positions = result.scalars().all()
     
-    # Calculate total value = balance + portfolio_value
-    total_value = balance + portfolio_value
+    # Calculate position values
+    position_values_sum = Decimal('0.00')
+    
+    if positions:
+        # Get unique tickers from positions
+        unique_tickers = list(set(pos.ticker for pos in positions))
+        
+        # Fetch market data for all tickers
+        market_data_map = await fetch_market_data_for_tickers(unique_tickers)
+        
+        # Calculate value for each position using midpoint pricing
+        for position in positions:
+            market_data = market_data_map.get(position.ticker)
+            
+            if not market_data:
+                # Skip positions without market data
+                continue
+            
+            # Determine side and calculate midpoint price
+            if position.position > 0:
+                # Yes position - use yes midpoint
+                yes_bid = market_data.get('yes_bid', 0)
+                yes_ask = market_data.get('yes_ask', 0)
+                midpoint_cents = (yes_bid + yes_ask) / 2
+            else:
+                # No position - use no midpoint
+                no_bid = market_data.get('no_bid', 0)
+                no_ask = market_data.get('no_ask', 0)
+                midpoint_cents = (no_bid + no_ask) / 2
+            
+            # Convert midpoint from cents to dollars
+            midpoint_dollars = Decimal(str(midpoint_cents)) / Decimal('100')
+            
+            # Calculate position value = abs(position) * midpoint_price
+            position_value = Decimal(str(abs(position.position))) * midpoint_dollars
+            position_values_sum += position_value
+    
+    # Calculate total value = balance + sum of position values
+    total_value = account_balance + position_values_sum
     
     # Create new AccountValue record
     account_value = AccountValue(
@@ -1072,7 +1119,7 @@ async def get_kalshi_account_value_history_handler(
     ordered by timestamp ascending.
     
     Args:
-        account_name: Name of the Kalshi account
+        account_name: Name of the account
         start_time: Start of time range
         end_time: End of time range
         db: Database session
@@ -1083,8 +1130,16 @@ async def get_kalshi_account_value_history_handler(
     Raises:
         HTTPException: If account not found
     """
-    # Get Kalshi account from database
-    account = await _get_kalshi_account(db, account_name)
+    # Get account from database
+    stmt = select(Account).where(Account.account_name == account_name)
+    result = await db.execute(stmt)
+    account = result.scalar_one_or_none()
+    
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Account '{account_name}' not found"
+        )
     
     # Query account values within the time range
     stmt = (
