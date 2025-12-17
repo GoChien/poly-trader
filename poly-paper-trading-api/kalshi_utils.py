@@ -546,8 +546,9 @@ async def _fill_kalshi_order(
         # Add proceeds to balance
         locked_account.balance += cost_or_proceeds
     
-    # Mark order as filled
+    # Mark order as filled and update price to actual fill price
     order.status = KalshiOrderStatus.FILLED
+    order.price = fill_price_cents
     
     # Commit this transaction
     await db.commit()
