@@ -75,11 +75,19 @@ grok_model = LiteLlm(
     api_key=os.getenv("XAI_API_KEY"),
 )
 
-# Qwen via Vertex AI
+# Qwen via Vertex AI Model Garden (MaaS)
+# Format for MaaS models: vertex_ai/{model-id}
 qwen_model = LiteLlm(
     model='vertex_ai/qwen/qwen3-235b-a22b-instruct-2507-maas',
     vertex_project=os.getenv("GOOGLE_CLOUD_PROJECT"),
     vertex_location='us-south1'
+)
+
+# Kimi via Vertex AI
+kimi_model = LiteLlm(
+    model='vertex_ai/moonshotai/kimi-k2-thinking-maas',
+    vertex_project=os.getenv("GOOGLE_CLOUD_PROJECT"),
+    vertex_location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")  # Check available regions for Kimi
 )
 
 root_agent = Agent(
@@ -87,7 +95,8 @@ root_agent = Agent(
     # model=gemini_model,
     # model=claude_model,
     # model=grok_model,
-    model=qwen_model,
+    # model=qwen_model,
+    model=kimi_model,
     name='kalshi_agent',
     description='Kalshi paper trading agent: research markets, create automated strategies (max 10, one per ticker), and manage portfolio.',
     instruction=KALSHI_AGENT_INSTRUCTION,
