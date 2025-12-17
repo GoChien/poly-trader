@@ -1,17 +1,16 @@
 import os
-import uuid
 
-import httpx
 from dotenv import load_dotenv
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.runners import Runner
-from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
+from google.adk.sessions import InMemorySessionService
 from google.genai.types import Content, Part
 from agents.agent import root_agent
 from strategy_agent.agent import root_agent as strategy_agent
-from kalshi_strategy_agent.agent import root_agent as kalshi_strategy_agent
+from kalshi_strategy_agent.agent import root_agent as kalshi_strategy_agent, create_kalshi_agent
 
 # Load environment variables from .env file
 load_dotenv()
@@ -56,38 +55,48 @@ app: FastAPI = get_fast_api_app(
 )
 
 
+class RunAgentRequest(BaseModel):
+    """Request body for run_agent endpoint."""
+    model_name: str = Field(
+        default='gemini',
+        description="Model to use for the agent. Options: 'openai', 'gemini', 'claude', 'grok', 'qwen', 'kimi'"
+    )
+
 # Additional endpoint: run_agent
 # This endpoint creates a session and sends a message to the agent with hard-coded values
-@app.post("/run_agent", include_in_schema=False)
-async def run_agent():
+@app.post("/run_agent")
+async def run_agent(request: RunAgentRequest = RunAgentRequest()):
     """
     Creates a session and sends a message to the agent with hard-coded values.
+    
+    Args:
+        request: Request body containing model_name parameter
     
     Returns:
         Response from the agent run endpoint
     """
-    app_name = "agents"
-    user_id = "tester"
     message_text = "Review my current strategy and positions. Get the latest market data and then either create or update the strategies based on current market conditions. Note: This is an automatic message, so please proceed without asking follow-up questions."
+    app_name = "agents"
+    user_id = "user"
+    session_id = "session"
+    model_name = request.model_name
 
-    # Initialize Vertex AI Session Service
-    session_service = VertexAiSessionService(
-        GCP_PROJECT_ID,
-        GCP_LOCATION,
-        REASONING_ENGINE_ID
+    # Create session
+    session_service = InMemorySessionService()
+    await session_service.create_session(
+        app_name=app_name,
+        user_id=user_id, 
+        session_id=session_id,
+        state={
+            "account_name": model_name,
+        }
     )
 
     # Initialize Runner
     runner = Runner(
-        agent=active_agent,
+        agent=create_kalshi_agent(model_name=model_name),
         session_service=session_service,
         app_name=app_name
-    )
-
-    # Create session
-    session = await session_service.create_session(
-        app_name=app_name,
-        user_id=user_id,
     )
 
     # Create Content object
@@ -102,7 +111,7 @@ async def run_agent():
         response_text = ""
         async for event in runner.run_async(
             user_id=user_id,
-            session_id=session.id,
+            session_id=session_id,
             new_message=user_content
         ):
             # Check if the event has content and parts with text

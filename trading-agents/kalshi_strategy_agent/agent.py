@@ -65,7 +65,7 @@ gemini_model = 'gemini-3-pro-preview'
 claude_model = LiteLlm(
     model='vertex_ai/claude-sonnet-4@20250514', 
     vertex_project=os.getenv("GOOGLE_CLOUD_PROJECT"),
-    vertex_location=os.getenv("GOOGLE_CLOUD_LOCATION", "global")
+    vertex_location="global"
 )
 
 # Grok via XAI
@@ -87,32 +87,61 @@ qwen_model = LiteLlm(
 kimi_model = LiteLlm(
     model='vertex_ai/moonshotai/kimi-k2-thinking-maas',
     vertex_project=os.getenv("GOOGLE_CLOUD_PROJECT"),
-    vertex_location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")  # Check available regions for Kimi
+    vertex_location="global"
 )
 
-root_agent = Agent(
-    # model=openai_model,
-    # model=gemini_model,
-    # model=claude_model,
-    # model=grok_model,
-    # model=qwen_model,
-    model=kimi_model,
-    name='kalshi_agent',
-    description='Kalshi paper trading agent: research markets, create automated strategies (max 10, one per ticker), and manage portfolio.',
-    instruction=KALSHI_AGENT_INSTRUCTION,
-    tools=[
-        # Strategy Management
-        get_active_kalshi_strategies,
-        create_kalshi_strategy,
-        update_kalshi_strategy,
-        remove_kalshi_strategy,
-        # Portfolio state
-        get_kalshi_balance,
-        get_kalshi_positions,
-        # Market discovery
-        list_new_markets,
-        # Research
-        AgentTool(agent=google_search_agent),
-    ],
-)
+# Dictionary mapping model names to model instances
+AVAILABLE_MODELS = {
+    'openai': openai_model,
+    'gemini': gemini_model,
+    'claude': claude_model,
+    'grok': grok_model,
+    'qwen': qwen_model,
+    'kimi': kimi_model,
+}
 
+
+def create_kalshi_agent(model_name: str = 'gemini') -> Agent:
+    """
+    Create a Kalshi trading agent with the specified model.
+    
+    Args:
+        model_name: Name of the model to use. Options: 'openai', 'gemini', 'claude', 'grok', 'qwen', 'kimi'
+                   Defaults to 'gemini'.
+    
+    Returns:
+        Agent configured with the specified model.
+    
+    Raises:
+        ValueError: If the model_name is not in AVAILABLE_MODELS.
+    """
+    if model_name not in AVAILABLE_MODELS:
+        available = ', '.join(AVAILABLE_MODELS.keys())
+        raise ValueError(f"Model '{model_name}' not found. Available models: {available}")
+    
+    model = AVAILABLE_MODELS[model_name]
+    
+    return Agent(
+        model=model,
+        name='kalshi_agent',
+        description='Kalshi paper trading agent: research markets, create automated strategies (max 10, one per ticker), and manage portfolio.',
+        instruction=KALSHI_AGENT_INSTRUCTION,
+        tools=[
+            # Strategy Management
+            get_active_kalshi_strategies,
+            create_kalshi_strategy,
+            update_kalshi_strategy,
+            remove_kalshi_strategy,
+            # Portfolio state
+            get_kalshi_balance,
+            get_kalshi_positions,
+            # Market discovery
+            list_new_markets,
+            # Research
+            AgentTool(agent=google_search_agent),
+        ],
+    )
+
+
+# Create default agent with Gemini
+root_agent = create_kalshi_agent('gemini')

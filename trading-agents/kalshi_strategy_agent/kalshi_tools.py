@@ -2,6 +2,7 @@ import os
 import httpx
 from typing import Optional
 from dotenv import load_dotenv
+from google.adk.tools import ToolContext
 
 # Load environment variables from .env file
 load_dotenv()
@@ -12,13 +13,15 @@ DEFAULT_ENTRY_MAX_CAPITAL_RISK = 200.0  # Maximum $200 risk per strategy
 DEFAULT_ENTRY_MAX_POSITION_SHARES = 1000  # Maximum 1000 shares per position
 
 
-async def get_kalshi_balance() -> dict:
+async def get_kalshi_balance(tool_context: ToolContext) -> dict:
     """Get the current balance for a Kalshi account.
     
     This tool retrieves the current balance information from the Kalshi API including:
     - Available balance (amount available for trading)
     - Portfolio value (current value of all positions held)
     - Last update timestamp
+    
+    The account name is read from the session state.
     
     Returns:
         dict: A dictionary containing:
@@ -27,16 +30,18 @@ async def get_kalshi_balance() -> dict:
             - updated_ts (int): Unix timestamp of the last update
     
     Raises:
-        ValueError: If POLY_PAPER_URL or KALSHI_ACCOUNT_NAME not set in environment
+        ValueError: If POLY_PAPER_URL not set in environment or account_name not in session state
         httpx.HTTPStatusError: If the API request fails
     """
     poly_paper_url = os.getenv("POLY_PAPER_URL")
-    kalshi_account_name = os.getenv("KALSHI_ACCOUNT_NAME")
     
     if not poly_paper_url:
         raise ValueError("POLY_PAPER_URL not set in environment")
+    
+    # Get account_name from session state
+    kalshi_account_name = tool_context.state.get("account_name")
     if not kalshi_account_name:
-        raise ValueError("KALSHI_ACCOUNT_NAME not set in environment")
+        raise ValueError("account_name not set in session state")
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
@@ -121,11 +126,13 @@ async def list_new_markets(exclude_tickers: Optional[list[str]] = None) -> dict:
     }
 
 
-async def get_kalshi_positions() -> dict:
+async def get_kalshi_positions(tool_context: ToolContext) -> dict:
     """Get all positions for a Kalshi account.
     
     This tool retrieves all positions from the database for a Kalshi account.
     Only positions with non-zero values are returned.
+    
+    The account name is read from the session state.
     
     Returns:
         dict: A dictionary containing:
@@ -135,16 +142,18 @@ async def get_kalshi_positions() -> dict:
                 - position (int): Absolute position size
     
     Raises:
-        ValueError: If POLY_PAPER_URL or KALSHI_ACCOUNT_NAME not set in environment
+        ValueError: If POLY_PAPER_URL not set in environment or account_name not in session state
         httpx.HTTPStatusError: If the API request fails
     """
     poly_paper_url = os.getenv("POLY_PAPER_URL")
-    kalshi_account_name = os.getenv("KALSHI_ACCOUNT_NAME")
     
     if not poly_paper_url:
         raise ValueError("POLY_PAPER_URL not set in environment")
+    
+    # Get account_name from session state
+    kalshi_account_name = tool_context.state.get("account_name")
     if not kalshi_account_name:
-        raise ValueError("KALSHI_ACCOUNT_NAME not set in environment")
+        raise ValueError("account_name not set in session state")
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
@@ -164,6 +173,7 @@ async def create_kalshi_strategy(
     entry_max_price: float,
     exit_take_profit_price: float,
     exit_stop_loss_price: float,
+    tool_context: ToolContext,
     side: str = "yes",
     exit_time_stop_utc: Optional[str] = None,
     valid_until_utc: Optional[str] = None,
@@ -178,6 +188,8 @@ async def create_kalshi_strategy(
     
     The strategy will be monitored and executed automatically by the system.
     Only one active strategy per market ticker is allowed at a time.
+    
+    The account name is read from the session state.
     
     Risk management parameters are hardcoded for safety:
     - Minimum implied edge: 5% (DEFAULT_ENTRY_MIN_IMPLIED_EDGE)
@@ -197,6 +209,7 @@ async def create_kalshi_strategy(
             When bid price reaches this, all shares will be sold.
         exit_stop_loss_price (float): Price at which to cut losses (0.0 to 1.0).
             When bid price falls to this, all shares will be sold to limit losses.
+        tool_context (ToolContext): Tool context for accessing session state
         side (str): Which side to bet on - "yes" or "no". Defaults to "yes".
             - "yes": Betting that the event will happen
             - "no": Betting that the event will NOT happen
@@ -226,7 +239,7 @@ async def create_kalshi_strategy(
             - created_at (str): Strategy creation timestamp
     
     Raises:
-        ValueError: If POLY_PAPER_URL or KALSHI_ACCOUNT_NAME not set in environment
+        ValueError: If POLY_PAPER_URL not set in environment or account_name not in session state
         httpx.HTTPStatusError: If the API request fails (e.g., strategy already exists for this ticker)
     
     Example:
@@ -238,16 +251,19 @@ async def create_kalshi_strategy(
             entry_max_price=0.55,
             exit_take_profit_price=0.90,
             exit_stop_loss_price=0.30,
+            tool_context=tool_context,
             notes="Monitor ETF flows and Fed policy announcements"
         )
     """
     poly_paper_url = os.getenv("POLY_PAPER_URL")
-    kalshi_account_name = os.getenv("KALSHI_ACCOUNT_NAME")
     
     if not poly_paper_url:
         raise ValueError("POLY_PAPER_URL not set in environment")
+    
+    # Get account_name from session state
+    kalshi_account_name = tool_context.state.get("account_name")
     if not kalshi_account_name:
-        raise ValueError("KALSHI_ACCOUNT_NAME not set in environment")
+        raise ValueError("account_name not set in session state")
     
     # Build request payload
     payload = {
@@ -291,7 +307,7 @@ async def create_kalshi_strategy(
     return data
 
 
-async def get_active_kalshi_strategies() -> dict:
+async def get_active_kalshi_strategies(tool_context: ToolContext) -> dict:
     """Get all active strategies for the Kalshi account with current market data.
     
     This tool retrieves all active trading strategies for your Kalshi account.
@@ -302,8 +318,13 @@ async def get_active_kalshi_strategies() -> dict:
     Active strategies are being monitored and will automatically execute trades
     based on their entry/exit conditions.
     
+    The account name is read from the session state.
+    
     IMPORTANT: This now includes real-time market data for each strategy, allowing you to
     see current prices and calculate the edge.
+    
+    Args:
+        tool_context (ToolContext): Tool context for accessing session state
     
     Returns:
         dict: A dictionary containing:
@@ -340,12 +361,12 @@ async def get_active_kalshi_strategies() -> dict:
                 - current_edge (Optional[float]): thesis_probability - current_yes_ask
     
     Raises:
-        ValueError: If POLY_PAPER_URL or KALSHI_ACCOUNT_NAME not set in environment
+        ValueError: If POLY_PAPER_URL not set in environment or account_name not in session state
         httpx.HTTPStatusError: If the API request fails
     
     Example:
         # Get all active strategies with market data
-        result = await get_active_kalshi_strategies()
+        result = await get_active_kalshi_strategies(tool_context)
         print(f"Found {len(result['strategies'])} active strategies")
         for strategy in result['strategies']:
             ticker = strategy['ticker']
@@ -354,12 +375,14 @@ async def get_active_kalshi_strategies() -> dict:
             print(f"  - {ticker}: Ask ${current_ask}, Edge: {current_edge}")
     """
     poly_paper_url = os.getenv("POLY_PAPER_URL")
-    kalshi_account_name = os.getenv("KALSHI_ACCOUNT_NAME")
     
     if not poly_paper_url:
         raise ValueError("POLY_PAPER_URL not set in environment")
+    
+    # Get account_name from session state
+    kalshi_account_name = tool_context.state.get("account_name")
     if not kalshi_account_name:
-        raise ValueError("KALSHI_ACCOUNT_NAME not set in environment")
+        raise ValueError("account_name not set in session state")
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
