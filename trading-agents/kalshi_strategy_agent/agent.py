@@ -68,16 +68,26 @@ claude_model = LiteLlm(
     vertex_location=os.getenv("GOOGLE_CLOUD_LOCATION", "global")
 )
 
+# Grok via XAI
+# Requires: XAI_API_KEY environment variable is set
 grok_model = LiteLlm(
     model='xai/grok-4-1-fast-reasoning',
-    api_key=os.getenv("XAI_API_KEY")
+    api_key=os.getenv("XAI_API_KEY"),
+)
+
+# Qwen via Vertex AI
+qwen_model = LiteLlm(
+    model='vertex_ai/qwen/qwen3-235b-a22b-instruct-2507-maas',
+    vertex_project=os.getenv("GOOGLE_CLOUD_PROJECT"),
+    vertex_location='us-south1'
 )
 
 root_agent = Agent(
     # model=openai_model,
     # model=gemini_model,
     # model=claude_model,
-    model=grok_model,
+    # model=grok_model,
+    model=qwen_model,
     name='kalshi_agent',
     description='Kalshi paper trading agent: research markets, create automated strategies (max 10, one per ticker), and manage portfolio.',
     instruction=KALSHI_AGENT_INSTRUCTION,
