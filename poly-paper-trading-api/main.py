@@ -3,8 +3,11 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
+from decimal import Decimal
 
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Configure logging
@@ -54,7 +57,7 @@ from kalshi_utils import (
     update_kalshi_account_value_handler,
 )
 from database import close_db, get_db, init_db
-from models.account import Base
+from models.account import Account, Base
 from models.kalshi_account import KalshiAccount  # noqa: F401 - imported for table creation
 from models.kalshi_market import KalshiMarket  # noqa: F401 - imported for table creation
 from models.strategy import Strategy  # noqa: F401 - imported for table creation
@@ -154,6 +157,50 @@ async def get_positions(
 ) -> GetPositionsResponse:
     """Get all positions held by an account."""
     return await get_positions_handler(account_name, db)
+
+
+class InitializeAccountsResponse(BaseModel):
+    message: str
+    created_accounts: list[str]
+
+
+@app.post("/accounts/initialize", response_model=InitializeAccountsResponse)
+async def initialize_accounts(db: AsyncSession = Depends(get_db)) -> InitializeAccountsResponse:
+    """
+    Initialize standard accounts with a default balance of 10000.
+    Names: 'openai', 'gemini', 'claude', 'grok', 'qwen', 'kimi'
+    If any account exists, the request fails.
+    """
+    account_names = ['openai', 'gemini', 'claude', 'grok', 'qwen', 'kimi']
+    
+    # Check if any exist
+    stmt = select(Account).where(Account.account_name.in_(account_names))
+    result = await db.execute(stmt)
+    existing = result.scalars().all()
+    
+    if existing:
+        names = ", ".join([a.account_name for a in existing])
+        raise HTTPException(
+            status_code=409,
+            detail=f"Accounts already exist: {names}"
+        )
+    
+    created = []
+    for name in account_names:
+        account = Account(account_name=name, balance=Decimal("10000.00"))
+        db.add(account)
+        created.append(name)
+    
+    try:
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to initialize accounts: {str(e)}")
+        
+    return InitializeAccountsResponse(
+        message="Accounts initialized successfully",
+        created_accounts=created
+    )
 
 
 @app.post("/orders/limit", response_model=PlaceLimitOrderResponse)
