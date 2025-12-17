@@ -12,9 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.account import Account, AccountValue
-from models.order import Order, OrderSide, OrderStatus
-from models.position import Position
-from models.transaction import Transaction
+from models.order import Order, OrderSide, OrderStatus, KalshiOrder, KalshiOrderStatus, KalshiOrderAction, KalshiOrderSide
+from models.position import Position, KalshiPosition
 
 POLYMARKET_CLOB_URL = "https://clob.polymarket.com"
 POLYMARKET_GAMMA_URL = "https://gamma-api.polymarket.com"
@@ -587,140 +586,121 @@ async def audit_account_handler(
     account_name: str, db: AsyncSession
 ) -> AuditAccountResponse:
     """
-    Audit account by recalculating cash and positions from transactions.
-    
-    Starts with initial balance of 10000 and replays all transactions:
-    - BUY: subtract (price * size) from cash, add size to position
-    - SELL: add (price * size) to cash, subtract size from position
-    
-    Compares calculated values with actual database values.
+    Audit an account by recalculating balance and positions from filled orders.
+    Initial balance is 10000.
     """
     try:
-        logger.info(f"Starting account audit for account_name={account_name}")
-        
         # Find the account by name
         stmt = select(Account).where(Account.account_name == account_name)
         result = await db.execute(stmt)
         account = result.scalar_one_or_none()
-
+        
         if not account:
             raise HTTPException(
                 status_code=404,
                 detail=f"Account with name '{account_name}' not found"
             )
-
-        logger.info(f"Account found: account_id={account.account_id}, current_balance={account.balance}")
-
-        # Get all transactions for this account, ordered by execution time
-        stmt = (
-            select(Transaction)
-            .where(Transaction.account_id == account.account_id)
-            .order_by(Transaction.executed_at)
+        
+        # Get all filled Kalshi orders for this account
+        stmt = select(KalshiOrder).where(
+            KalshiOrder.account_id == account.account_id,
+            KalshiOrder.status == KalshiOrderStatus.FILLED
+        ).order_by(KalshiOrder.created_at)
+        result = await db.execute(stmt)
+        filled_orders = result.scalars().all()
+        
+        # Calculate expected balance starting from 10000
+        initial_balance = Decimal("10000.00")
+        expected_balance = initial_balance
+        
+        # Calculate expected positions per ticker
+        expected_positions: dict[str, int] = {}
+        
+        for order in filled_orders:
+            # Calculate balance impact
+            # price is 1-99 (cents), so divide by 100 to get dollar amount per contract
+            order_value = Decimal(order.price * order.count) / Decimal("100")
+            
+            if order.action == KalshiOrderAction.BUY:
+                expected_balance -= order_value
+            else:  # SELL
+                expected_balance += order_value
+            
+            # Calculate position impact
+            # Positive position = YES position, Negative = NO position
+            if order.ticker not in expected_positions:
+                expected_positions[order.ticker] = 0
+            
+            if order.action == KalshiOrderAction.BUY and order.side == KalshiOrderSide.YES:
+                # Buy YES: add to position
+                expected_positions[order.ticker] += order.count
+            elif order.action == KalshiOrderAction.SELL and order.side == KalshiOrderSide.NO:
+                # Sell NO: add to position (selling NO is like buying YES)
+                expected_positions[order.ticker] += order.count
+            elif order.action == KalshiOrderAction.SELL and order.side == KalshiOrderSide.YES:
+                # Sell YES: subtract from position
+                expected_positions[order.ticker] -= order.count
+            elif order.action == KalshiOrderAction.BUY and order.side == KalshiOrderSide.NO:
+                # Buy NO: subtract from position (buying NO is like selling YES)
+                expected_positions[order.ticker] -= order.count
+        
+        # Get actual positions from database
+        stmt = select(KalshiPosition).where(
+            KalshiPosition.account_id == account.account_id
         )
         result = await db.execute(stmt)
-        transactions = result.scalars().all()
+        actual_positions_db = result.scalars().all()
+        actual_positions = {pos.ticker: pos.position for pos in actual_positions_db}
         
-        logger.info(f"Found {len(transactions)} transactions to process")
-
-        # Get all current positions
-        stmt = select(Position).where(Position.account_id == account.account_id)
-        result = await db.execute(stmt)
-        positions = result.scalars().all()
-        actual_positions = {pos.token_id: pos.shares for pos in positions}
-        
-        logger.info(f"Current positions in database: {actual_positions}")
-
-        # Initialize expected state
-        INITIAL_BALANCE = Decimal("10000.00")
-        expected_balance = INITIAL_BALANCE
-        expected_positions: dict[str, int] = {}  # token_id -> shares
-
-        logger.info(f"Starting with initial balance: ${INITIAL_BALANCE}")
-        logger.info("Replaying transactions:")
-
-        # Replay all transactions
-        for i, txn in enumerate(transactions, 1):
-            if txn.side == OrderSide.BUY:
-                # BUY: subtract cash, add shares
-                cost = txn.execution_price * txn.size
-                expected_balance -= cost
-                expected_positions[txn.token_id] = expected_positions.get(txn.token_id, 0) + txn.size
-                logger.info(f"  {i}. BUY {txn.size} shares of {txn.token_id} at ${txn.execution_price} (cost: ${cost}) - Balance: ${expected_balance}")
-            else:  # SELL
-                # SELL: add cash, subtract shares
-                revenue = txn.execution_price * txn.size
-                expected_balance += revenue
-                expected_positions[txn.token_id] = expected_positions.get(txn.token_id, 0) - txn.size
-                logger.info(f"  {i}. SELL {txn.size} shares of {txn.token_id} at ${txn.execution_price} (revenue: ${revenue}) - Balance: ${expected_balance}")
-
-        logger.info(f"\nExpected final state:")
-        logger.info(f"  Balance: ${expected_balance}")
-        logger.info(f"  Positions: {expected_positions}")
-        
-        logger.info(f"\nActual state in database:")
-        logger.info(f"  Balance: ${account.balance}")
-        logger.info(f"  Positions: {actual_positions}")
-
-        # Compare balance
-        balance_difference = account.balance - expected_balance
-        balance_is_correct = balance_difference == Decimal("0")
-        
-        if balance_is_correct:
-            logger.info(f"✓ Balance is CORRECT")
-        else:
-            logger.warning(f"✗ Balance MISMATCH: expected ${expected_balance}, got ${account.balance}, difference: ${balance_difference}")
-
         # Compare positions
-        all_token_ids = set(expected_positions.keys()) | set(actual_positions.keys())
         position_discrepancies = []
-
-        for token_id in all_token_ids:
-            expected_shares = expected_positions.get(token_id, 0)
-            actual_shares = actual_positions.get(token_id, 0)
-            difference = actual_shares - expected_shares
-            is_correct = difference == 0
-
-            if not is_correct:
-                logger.warning(f"✗ Position MISMATCH for {token_id}: expected {expected_shares} shares, got {actual_shares} shares, difference: {difference}")
-            else:
-                logger.info(f"✓ Position CORRECT for {token_id}: {actual_shares} shares")
-
-            position_discrepancies.append(
-                PositionDiscrepancy(
-                    token_id=token_id,
-                    expected_shares=expected_shares,
-                    actual_shares=actual_shares,
-                    difference=difference,
-                    is_correct=is_correct,
+        all_tickers = set(expected_positions.keys()) | set(actual_positions.keys())
+        
+        for ticker in all_tickers:
+            expected = expected_positions.get(ticker, 0)
+            actual = actual_positions.get(ticker, 0)
+            difference = actual - expected
+            is_correct = (difference == 0)
+            
+            if not is_correct or expected != 0 or actual != 0:  # Include positions with activity
+                position_discrepancies.append(
+                    PositionDiscrepancy(
+                        token_id=ticker,
+                        expected_shares=expected,
+                        actual_shares=actual,
+                        difference=difference,
+                        is_correct=is_correct
+                    )
                 )
-            )
-
-        all_positions_correct = all(pd.is_correct for pd in position_discrepancies)
+        
+        # Check balance
+        actual_balance = account.balance
+        balance_difference = actual_balance - expected_balance
+        balance_is_correct = abs(balance_difference) < Decimal("0.01")  # Allow for rounding
+        
+        # Check if all positions are correct
+        all_positions_correct = all(disc.is_correct for disc in position_discrepancies) if position_discrepancies else True
+        
+        # Overall consistency check
         is_consistent = balance_is_correct and all_positions_correct
-
-        if is_consistent:
-            logger.info(f"\n✓✓✓ Account is CONSISTENT ✓✓✓")
-        else:
-            logger.warning(f"\n✗✗✗ Account has DISCREPANCIES ✗✗✗")
-
+        
         return AuditAccountResponse(
             account_id=account.account_id,
             account_name=account.account_name,
-            initial_balance=INITIAL_BALANCE,
+            initial_balance=initial_balance,
             expected_balance=expected_balance,
-            actual_balance=account.balance,
+            actual_balance=actual_balance,
             balance_difference=balance_difference,
             balance_is_correct=balance_is_correct,
             position_discrepancies=position_discrepancies,
             all_positions_correct=all_positions_correct,
-            is_consistent=is_consistent,
+            is_consistent=is_consistent
         )
-
+        
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error during account audit: {str(e)}", exc_info=True)
+        logger.error(f"Failed to audit account: {str(e)}")
         raise HTTPException(
             status_code=500, detail=f"Failed to audit account: {str(e)}"
         )
-
