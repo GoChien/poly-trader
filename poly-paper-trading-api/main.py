@@ -387,6 +387,42 @@ async def process_strategies(
     return await process_strategies_handler(account_name, db)
 
 
+class BatchProcessStrategiesResponse(BaseModel):
+    results: dict[str, ProcessStrategiesResponse]
+
+
+@app.post("/strategies/batch_process", response_model=BatchProcessStrategiesResponse)
+async def batch_process_strategies(
+    db: AsyncSession = Depends(get_db)
+) -> BatchProcessStrategiesResponse:
+    """
+    Batch process all active strategies for standard accounts.
+    Accounts: 'openai', 'gemini', 'claude', 'grok', 'qwen', 'kimi'
+    
+    This endpoint iterates through the standard account names and processes
+    strategies for each one, consolidating the results.
+    """
+    account_names = ['openai', 'gemini', 'claude', 'grok', 'qwen', 'kimi']
+    results = {}
+    
+    for name in account_names:
+        try:
+            # Process strategies for this account
+            result = await process_strategies_handler(name, db)
+            results[name] = result
+        except HTTPException as e:
+            # If account not found, skip it
+            if e.status_code == 404:
+                continue
+            raise e
+        except Exception as e:
+            # For other errors, log and continue
+            logging.error(f"Error processing strategies for {name}: {str(e)}")
+            continue
+            
+    return BatchProcessStrategiesResponse(results=results)
+
+
 @app.get("/accounts/audit", response_model=AuditAccountResponse)
 async def audit_account(
     account_name: str, db: AsyncSession = Depends(get_db)
