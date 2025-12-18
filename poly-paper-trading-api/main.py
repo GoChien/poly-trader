@@ -591,6 +591,42 @@ async def process_kalshi_orders(
     return await process_kalshi_orders_handler(account_name, db)
 
 
+class BatchProcessKalshiOrdersResponse(BaseModel):
+    results: dict[str, ProcessKalshiOrdersResponse]
+
+
+@app.post("/kalshi/orders/batch_process", response_model=BatchProcessKalshiOrdersResponse)
+async def batch_process_kalshi_orders(
+    db: AsyncSession = Depends(get_db)
+) -> BatchProcessKalshiOrdersResponse:
+    """
+    Batch process all non-expired open Kalshi orders for standard accounts.
+    Accounts: 'openai', 'gemini', 'claude', 'grok', 'qwen', 'kimi'
+    
+    This endpoint iterates through the standard account names and processes
+    orders for each one, consolidating the results.
+    """
+    account_names = ['openai', 'gemini', 'claude', 'grok', 'qwen', 'kimi']
+    results = {}
+    
+    for name in account_names:
+        try:
+            # Process orders for this account
+            result = await process_kalshi_orders_handler(name, db)
+            results[name] = ProcessKalshiOrdersResponse(**result)
+        except HTTPException as e:
+            # If account not found, we skip it for batch processing
+            if e.status_code == 404:
+                continue
+            raise e
+        except Exception as e:
+            # For other errors, log and continue
+            logging.error(f"Error processing orders for {name}: {str(e)}")
+            continue
+            
+    return BatchProcessKalshiOrdersResponse(results=results)
+
+
 @app.post("/kalshi/positions/sell-at-market", response_model=SellPositionAtMarketResponse)
 async def sell_position_at_market(
     request: SellPositionAtMarketRequest,
