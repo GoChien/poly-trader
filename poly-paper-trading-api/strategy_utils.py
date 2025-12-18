@@ -569,7 +569,7 @@ async def remove_strategy_handler(
 class ProcessStrategyResult(BaseModel):
     strategy_id: str
     ticker: str
-    action: str  # "buy", "sell_take_profit", "sell_stop_loss", "hold", "skip"
+    action: str  # "buy", "sell_take_profit", "sell_stop_loss", "sell_orphaned", "hold", "skip", "error"
     reason: str
     order_size: Optional[int] = None
     order_price: Optional[Decimal] = None
@@ -857,8 +857,9 @@ async def process_strategies_handler(
     Process all active strategies for an account.
     
     1. Queries all active strategies (valid_until_utc > now or null)
-    2. Processes each strategy in parallel using process_strategy_handler
-    3. Returns results for all strategies
+    2. Identifies and sells orphaned positions (non-zero positions without active strategies)
+    3. Processes each active strategy in parallel using process_strategy_handler
+    4. Returns results for all strategies
     """
     try:
         # Find the account by name
@@ -888,11 +889,59 @@ async def process_strategies_handler(
         result = await db.execute(stmt)
         strategies = result.scalars().all()
 
+        # Identify orphaned positions (non-zero positions without active strategies)
+        pos_stmt = select(KalshiPosition).where(
+            KalshiPosition.account_id == account.account_id,
+            KalshiPosition.position != 0
+        )
+        pos_result = await db.execute(pos_stmt)
+        all_positions = pos_result.scalars().all()
+        
+        active_tickers = {s.ticker for s in strategies}
+        orphaned_positions = [p for p in all_positions if p.ticker not in active_tickers]
+        
+        processed_results: list[ProcessStrategyResult] = []
+        
+        # Sell orphaned positions at market price
+        for p in orphaned_positions:
+            side = "yes" if p.position > 0 else "no"
+            count = abs(p.position)
+            try:
+                # Place market sell order to close the position
+                order_response = await create_kalshi_order(
+                    db=db,
+                    account_name=account_name,
+                    ticker=p.ticker,
+                    side=side,
+                    action="sell",
+                    count=count,
+                    type="market",
+                )
+                processed_results.append(
+                    ProcessStrategyResult(
+                        strategy_id="orphaned",
+                        ticker=p.ticker,
+                        action="sell_orphaned",
+                        reason=f"Orphaned position found (no active strategy). Sold {count} {side} shares at market.",
+                        order_size=count,
+                        order_id=order_response.get('order_id'),
+                    )
+                )
+            except Exception as e:
+                processed_results.append(
+                    ProcessStrategyResult(
+                        strategy_id="orphaned",
+                        ticker=p.ticker,
+                        action="error",
+                        reason=f"Failed to sell orphaned position: {str(e)}",
+                    )
+                )
+
         if not strategies:
             return ProcessStrategiesResponse(
                 account_name=account_name,
                 total_strategies=0,
-                results=[],
+                results=processed_results,
             )
         
         # Fetch market data for all tickers at once
@@ -915,7 +964,6 @@ async def process_strategies_handler(
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Convert exceptions to error results
-        processed_results: list[ProcessStrategyResult] = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 processed_results.append(
