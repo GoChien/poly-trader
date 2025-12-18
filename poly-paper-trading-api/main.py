@@ -538,6 +538,42 @@ async def update_kalshi_account_value(
     return await update_kalshi_account_value_handler(account_name, db)
 
 
+class BatchUpdateKalshiAccountValueResponse(BaseModel):
+    results: dict[str, UpdateKalshiAccountValueResponse]
+
+
+@app.post("/kalshi/accounts/batch_value", response_model=BatchUpdateKalshiAccountValueResponse)
+async def batch_update_kalshi_account_value(
+    db: AsyncSession = Depends(get_db)
+) -> BatchUpdateKalshiAccountValueResponse:
+    """
+    Batch calculate and store the total value for standard Kalshi accounts.
+    Accounts: 'openai', 'gemini', 'claude', 'grok', 'qwen', 'kimi'
+    
+    This endpoint iterates through the standard account names and updates
+    their values, consolidating the results.
+    """
+    account_names = ['openai', 'gemini', 'claude', 'grok', 'qwen', 'kimi']
+    results = {}
+    
+    for name in account_names:
+        try:
+            # Update value for this account
+            result = await update_kalshi_account_value_handler(name, db)
+            results[name] = result
+        except HTTPException as e:
+            # If account not found, skip it
+            if e.status_code == 404:
+                continue
+            raise e
+        except Exception as e:
+            # For other errors, log and continue
+            logging.error(f"Error updating Kalshi account value for {name}: {str(e)}")
+            continue
+            
+    return BatchUpdateKalshiAccountValueResponse(results=results)
+
+
 @app.get("/kalshi/accounts/value/history", response_model=GetKalshiAccountValueHistoryResponse)
 async def get_kalshi_account_value_history(
     account_name: str,
