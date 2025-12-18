@@ -856,6 +856,27 @@ class ProcessKalshiOrdersResponse(BaseModel):
     total_processed: int  # Total number of orders processed
 
 
+class KalshiOrderResponse(BaseModel):
+    """Response model for a single Kalshi order"""
+    order_id: uuid.UUID
+    account_id: uuid.UUID
+    ticker: str
+    side: KalshiOrderSide
+    action: KalshiOrderAction
+    count: int
+    type: KalshiOrderType
+    status: KalshiOrderStatus
+    price: int
+    expiration_ts: int
+    created_at: DateTime
+
+
+class GetFilledKalshiOrdersResponse(BaseModel):
+    """Response model for getting filled Kalshi orders"""
+    account_name: str
+    orders: list[KalshiOrderResponse]
+
+
 class SellPositionAtMarketRequest(BaseModel):
     """Request model for selling a position at market price"""
     account_name: str
@@ -958,6 +979,56 @@ async def get_kalshi_markets(
         'markets': all_markets,
         'total_count': len(all_markets)
     }
+
+
+async def get_filled_kalshi_orders_handler(
+    account_name: str, db: AsyncSession
+) -> GetFilledKalshiOrdersResponse:
+    """
+    Get all filled Kalshi orders for an account, ordered by created_at desc.
+    """
+    # 1. Get the account by name
+    stmt = select(Account).where(Account.account_name == account_name)
+    result = await db.execute(stmt)
+    account = result.scalar_one_or_none()
+
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Account '{account_name}' not found"
+        )
+
+    # 2. Get all FILLED orders for this account, ordered by created_at desc
+    stmt = (
+        select(KalshiOrder)
+        .where(
+            KalshiOrder.account_id == account.account_id,
+            KalshiOrder.status == KalshiOrderStatus.FILLED,
+        )
+        .order_by(KalshiOrder.created_at.desc())
+    )
+    result = await db.execute(stmt)
+    orders = result.scalars().all()
+
+    return GetFilledKalshiOrdersResponse(
+        account_name=account_name,
+        orders=[
+            KalshiOrderResponse(
+                order_id=order.order_id,
+                account_id=order.account_id,
+                ticker=order.ticker,
+                side=order.side,
+                action=order.action,
+                count=order.count,
+                type=order.type,
+                status=order.status,
+                price=order.price,
+                expiration_ts=order.expiration_ts,
+                created_at=order.created_at,
+            )
+            for order in orders
+        ],
+    )
 
 
 async def create_kalshi_account_handler(

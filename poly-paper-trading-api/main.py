@@ -38,6 +38,7 @@ from account_utils import (
 from kalshi_utils import (
     CreateKalshiAccountRequest,
     CreateKalshiAccountResponse,
+    GetFilledKalshiOrdersResponse,
     GetKalshiAccountPositionsResponse,
     GetKalshiAccountValueHistoryResponse,
     GetKalshiBalanceResponse,
@@ -48,6 +49,7 @@ from kalshi_utils import (
     SellPositionAtMarketResponse,
     UpdateKalshiAccountValueResponse,
     create_kalshi_account_handler,
+    get_filled_kalshi_orders_handler,
     get_kalshi_account_balance,
     get_kalshi_account_positions,
     get_kalshi_account_value_history_handler,
@@ -514,6 +516,19 @@ async def get_kalshi_positions(
     """
     positions_data = await get_kalshi_account_positions(db, account_name)
     return GetKalshiAccountPositionsResponse(**positions_data)
+
+
+@app.get("/kalshi/orders/filled", response_model=GetFilledKalshiOrdersResponse)
+async def get_filled_kalshi_orders(
+    account_name: str, db: AsyncSession = Depends(get_db)
+) -> GetFilledKalshiOrdersResponse:
+    """
+    Get all filled orders for a Kalshi account.
+
+    Returns a list of all orders with status 'filled' for the specified account,
+    ordered by creation time descending.
+    """
+    return await get_filled_kalshi_orders_handler(account_name, db)
 
 
 @app.post("/kalshi/accounts/{account_name}/value", response_model=UpdateKalshiAccountValueResponse)
