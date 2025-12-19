@@ -9,8 +9,8 @@ load_dotenv()
 
 # Risk management constants (hardcoded for safety)
 DEFAULT_ENTRY_MIN_IMPLIED_EDGE = 0.05  # 5% minimum edge required
-DEFAULT_ENTRY_MAX_CAPITAL_RISK = 200.0  # Maximum $200 risk per strategy
-DEFAULT_ENTRY_MAX_POSITION_SHARES = 1000  # Maximum 1000 shares per position
+DEFAULT_ENTRY_MAX_CAPITAL_RISK = 750.0  # Maximum $750 risk per strategy
+DEFAULT_ENTRY_MAX_POSITION_SHARES = 1500  # Maximum 1500 shares per position
 
 
 async def get_kalshi_balance(tool_context: ToolContext) -> dict:
@@ -195,8 +195,8 @@ async def create_kalshi_strategy(
     
     Risk management parameters are hardcoded for safety:
     - Minimum implied edge: 5% (DEFAULT_ENTRY_MIN_IMPLIED_EDGE)
-    - Maximum capital risk: $200 per strategy (DEFAULT_ENTRY_MAX_CAPITAL_RISK)
-    - Maximum position shares: 1000 shares (DEFAULT_ENTRY_MAX_POSITION_SHARES)
+    - Maximum capital risk: $750 per strategy (DEFAULT_ENTRY_MAX_CAPITAL_RISK)
+    - Maximum position shares: 1500 shares (DEFAULT_ENTRY_MAX_POSITION_SHARES)
     
     Args:
         ticker (str): Market ticker symbol (e.g., "KXBTC-24DEC31-T100000")

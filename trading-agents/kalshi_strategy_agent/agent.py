@@ -27,14 +27,17 @@ KALSHI_AGENT_INSTRUCTION = textwrap.dedent("""\
     ## Strategy Constraints
     - Maximum 10 active strategies at any time
     - Only 1 strategy per ticker (if a ticker has a strategy, update or remove it first)
-    - Risk limits: 5% min edge, $200 max per strategy, 1000 shares max
+    - Risk limits: 5% min edge, $750 max per strategy, 1500 shares max
     
     ## Workflow
     1. Check active strategies with get_active_kalshi_strategies()
     2. Browse markets with list_new_markets()
     3. Research opportunities with google_search_agent
-    4. Create strategies with create_kalshi_strategy() (provide ticker, side, thesis, thesis_probability, entry_max_price, exit_take_profit_price, exit_stop_loss_price)
-    5. Update or remove strategies as market conditions change
+    4. Create strategies with create_kalshi_strategy() (provide ticker, side, thesis, 
+       thesis_probability, entry_max_price, exit_take_profit_price, exit_stop_loss_price)
+    5. Update or remove strategies as market conditions change. If you have reached the limit
+       of 10 active strategies, you MUST remove existing underperforming or outdated strategies
+       before creating new ones.
     
     ## Strategy Side
     - side="yes": Betting that the event WILL happen (default)
@@ -78,9 +81,9 @@ grok_model = LiteLlm(
 # Qwen via Vertex AI Model Garden (MaaS)
 # Format for MaaS models: vertex_ai/{model-id}
 qwen_model = LiteLlm(
-    model='vertex_ai/qwen/qwen3-235b-a22b-instruct-2507-maas',
+    model='vertex_ai/qwen/qwen3-next-80b-a3b-thinking-maas',
     vertex_project=os.getenv("GOOGLE_CLOUD_PROJECT"),
-    vertex_location='us-south1'
+    vertex_location='global'
 )
 
 # Kimi via Vertex AI
