@@ -181,6 +181,8 @@ async def create_kalshi_strategy(
 ) -> dict:
     """Create a new trading strategy for a Kalshi market.
     
+    All prices are expressed in the contract price of the selected side (0.0 to 1.0).
+    
     This tool creates a trading strategy that defines:
     - Entry conditions: when and how to enter a position
     - Exit conditions: when to take profit, stop loss, or time-based exit
@@ -264,6 +266,22 @@ async def create_kalshi_strategy(
     kalshi_account_name = tool_context.state.get("account_name")
     if not kalshi_account_name:
         raise ValueError("account_name not set in session state")
+    
+    # Validate strategy prices
+    if exit_stop_loss_price >= entry_max_price:
+        return {
+            "error": "Invalid strategy: exit_stop_loss_price must be less than entry_max_price",
+            "exit_stop_loss_price": exit_stop_loss_price,
+            "entry_max_price": entry_max_price,
+            "suggestion": "Please adjust prices so that stop_loss < entry_max < take_profit"
+        }
+    if exit_take_profit_price <= entry_max_price:
+        return {
+            "error": "Invalid strategy: exit_take_profit_price must be greater than entry_max_price",
+            "exit_take_profit_price": exit_take_profit_price,
+            "entry_max_price": entry_max_price,
+            "suggestion": "Please adjust prices so that stop_loss < entry_max < take_profit"
+        }
     
     # Build request payload
     payload = {
@@ -419,6 +437,7 @@ async def get_active_kalshi_strategies(tool_context: ToolContext) -> dict:
 
 async def update_kalshi_strategy(
     strategy_id: str,
+    tool_context: ToolContext,
     thesis: Optional[str] = None,
     thesis_probability: Optional[float] = None,
     entry_max_price: Optional[float] = None,
@@ -429,6 +448,8 @@ async def update_kalshi_strategy(
     notes: Optional[str] = None,
 ) -> dict:
     """Update an existing trading strategy using an immutable update pattern.
+    
+    All prices are expressed in the contract price of the selected side (0.0 to 1.0).
     
     This tool updates a strategy by:
     1. Finding the existing strategy by strategy_id
@@ -441,6 +462,7 @@ async def update_kalshi_strategy(
     
     Args:
         strategy_id (str): The ID of the strategy to update (required)
+        tool_context (ToolContext): Tool context for accessing session state (required)
         thesis (Optional[str]): Updated reasoning for the trade
         thesis_probability (Optional[float]): Updated probability estimate (0.0-1.0)
         entry_max_price (Optional[float]): Updated max entry price (0.0-1.0)
@@ -479,6 +501,7 @@ async def update_kalshi_strategy(
         # Update the take profit and stop loss for a strategy
         result = await update_kalshi_strategy(
             strategy_id="abc123-def456-789",
+            tool_context=tool_context,
             exit_take_profit_price=0.95,  # Raise take profit
             exit_stop_loss_price=0.35,    # Tighten stop loss
             notes="Adjusted based on new market conditions"
@@ -490,6 +513,33 @@ async def update_kalshi_strategy(
     if not poly_paper_url:
         raise ValueError("POLY_PAPER_URL not set in environment")
     
+    # Fetch existing strategy to validate price relationships
+    active_result = await get_active_kalshi_strategies(tool_context)
+    old_strategy = next((s for s in active_result.get("strategies", []) if s["strategy_id"] == strategy_id), None)
+    
+    if not old_strategy:
+        raise ValueError(f"Strategy with ID {strategy_id} not found or is no longer active.")
+    
+    # Validate strategy price relationships
+    new_entry = entry_max_price if entry_max_price is not None else old_strategy["entry_max_price"]
+    new_tp = exit_take_profit_price if exit_take_profit_price is not None else old_strategy["exit_take_profit_price"]
+    new_sl = exit_stop_loss_price if exit_stop_loss_price is not None else old_strategy["exit_stop_loss_price"]
+    
+    if new_sl >= new_entry:
+        return {
+            "error": "Invalid strategy update: exit_stop_loss_price must be less than entry_max_price",
+            "current_effective_stop_loss": new_sl,
+            "current_effective_entry_max": new_entry,
+            "suggestion": "Please adjust prices so that stop_loss < entry_max < take_profit"
+        }
+    if new_tp <= new_entry:
+        return {
+            "error": "Invalid strategy update: exit_take_profit_price must be greater than entry_max_price",
+            "current_effective_take_profit": new_tp,
+            "current_effective_entry_max": new_entry,
+            "suggestion": "Please adjust prices so that stop_loss < entry_max < take_profit"
+        }
+
     # Build request payload with only the fields to update
     payload = {
         "strategy_id": strategy_id,
