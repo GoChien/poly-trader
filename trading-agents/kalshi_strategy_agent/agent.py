@@ -147,4 +147,4 @@ def create_kalshi_agent(model_name: str = 'gemini') -> Agent:
 
 
 # Create default agent with Gemini
-root_agent = create_kalshi_agent('gemini')
+root_agent = create_kalshi_agent('openai')
