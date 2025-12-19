@@ -324,7 +324,7 @@ async def get_active_strategies(
     For each strategy, this endpoint also fetches and returns:
     - Current market prices (yes_bid, yes_ask, no_bid, no_ask)
     - Market status and timing information
-    - Calculated current edge (thesis_probability - current_yes_ask)
+    - Calculated current edge (thesis_probability - current_side_ask)
     
     This provides a complete view of each strategy's status relative to current market conditions.
     """

@@ -128,7 +128,7 @@ class StrategyWithMarketDataResponse(BaseModel):
     market_close_time: Optional[datetime] = None
     market_expected_expiration_time: Optional[datetime] = None
     # Calculated fields
-    current_edge: Optional[Decimal] = None  # thesis_probability - current_yes_ask
+    current_edge: Optional[Decimal] = None  # thesis_probability - current_side_ask
 
 
 class GetActiveStrategiesResponse(BaseModel):
@@ -302,10 +302,14 @@ async def get_active_strategies_handler(
             no_ask = market_data.get('no_ask')
             no_bid = market_data.get('no_bid')
             
-            # Calculate current edge if we have yes_ask
+            # Calculate current edge based on strategy side
             current_edge = None
-            if yes_ask is not None:
-                current_edge = s.thesis_probability - yes_ask
+            if s.side == StrategySide.YES:
+                if yes_ask is not None:
+                    current_edge = s.thesis_probability - yes_ask
+            elif s.side == StrategySide.NO:
+                if no_ask is not None:
+                    current_edge = s.thesis_probability - no_ask
             
             strategies_with_market_data.append(
                 StrategyWithMarketDataResponse(

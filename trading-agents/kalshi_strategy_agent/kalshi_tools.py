@@ -376,21 +376,11 @@ async def get_active_kalshi_strategies(tool_context: ToolContext) -> dict:
                 - market_expected_expiration_time (Optional[str]): Expected settlement (ISO format)
                 
                 Calculated fields:
-                - current_edge (Optional[float]): thesis_probability - current_yes_ask
+                - current_edge (Optional[float]): thesis_probability - current_side_ask (yes_ask or no_ask)
     
     Raises:
         ValueError: If POLY_PAPER_URL not set in environment or account_name not in session state
         httpx.HTTPStatusError: If the API request fails
-    
-    Example:
-        # Get all active strategies with market data
-        result = await get_active_kalshi_strategies(tool_context)
-        print(f"Found {len(result['strategies'])} active strategies")
-        for strategy in result['strategies']:
-            ticker = strategy['ticker']
-            current_ask = strategy.get('current_yes_ask', 'N/A')
-            current_edge = strategy.get('current_edge', 'N/A')
-            print(f"  - {ticker}: Ask ${current_ask}, Edge: {current_edge}")
     """
     poly_paper_url = os.getenv("POLY_PAPER_URL")
     
