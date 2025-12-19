@@ -61,7 +61,11 @@ openai_model = LiteLlm(
 
 # Gemini via Vertex AI (direct string, no LiteLLM wrapper needed)
 # Region: global
-gemini_model = 'gemini-3-pro-preview'
+gemini_model = LiteLlm(
+    model='vertex_ai/gemini-3-pro-preview',
+    vertex_project=os.getenv("GOOGLE_CLOUD_PROJECT"),
+    vertex_location="global"
+)
 
 # Claude via LiteLLM with Vertex AI as provider
 # Requires: GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION env vars
