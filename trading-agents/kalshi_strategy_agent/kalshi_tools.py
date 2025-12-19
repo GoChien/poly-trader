@@ -4,12 +4,8 @@ import asyncio
 from typing import Optional
 from dotenv import load_dotenv
 from google.adk.tools import ToolContext
-from urllib.parse import urlsplit
 
-import google.auth
-from google.auth import impersonated_credentials
-from google.auth.transport.requests import Request
-from google.oauth2 import id_token as oauth2_id_token
+from .auth_utils import get_id_token_cached
 
 # Load environment variables from .env file
 load_dotenv()
@@ -19,61 +15,6 @@ DEFAULT_ENTRY_MIN_IMPLIED_EDGE = 0.05  # 5% minimum edge required
 DEFAULT_ENTRY_MAX_CAPITAL_RISK = 750.0  # Maximum $750 risk per strategy
 DEFAULT_ENTRY_MAX_POSITION_SHARES = 1500  # Maximum 1500 shares per position
 
-def _cloud_run_audience(url: str) -> str:
-    """
-    Cloud Run expects the audience to be the service hostname (scheme + netloc).
-    Example: https://my-svc-abc-uc.a.run.app/
-    """
-    parts = urlsplit(url)
-    if not parts.scheme or not parts.netloc:
-        raise ValueError(f"Expected a full URL like https://..., got: {url!r}")
-    return f"{parts.scheme}://{parts.netloc}/"
-
-
-def _fetch_id_token_sync(*, audience: str, impersonate_sa: str | None) -> str:
-    req = Request()
-
-    # 1) Works on Cloud Run (metadata server) and when GOOGLE_APPLICATION_CREDENTIALS
-    # points to a service account JSON key file.
-    try:
-        return oauth2_id_token.fetch_id_token(req, audience)
-    except Exception:
-        if not impersonate_sa:
-            raise
-
-    # 2) Local fallback: impersonate the service account to mint an ID token
-    # (requires IAMCredentials API + permissions, see below)
-    source_creds, _ = google.auth.default(
-        scopes=["https://www.googleapis.com/auth/cloud-platform"]
-    )
-
-    # This object represents the target service account identity we want to mint tokens for.
-    target_creds = impersonated_credentials.Credentials(
-        source_credentials=source_creds,
-        target_principal=impersonate_sa,
-        target_scopes=["https://www.googleapis.com/auth/cloud-platform"],
-        lifetime=3600,
-    )
-
-    id_creds = impersonated_credentials.IDTokenCredentials(
-        target_credentials=target_creds,
-        target_audience=audience,
-        include_email=True,
-    )
-
-    id_creds.refresh(req)
-    return id_creds.token
-
-async def get_id_token_for_cloud_run(url: str) -> str:
-    audience = _cloud_run_audience(url)
-
-    # Only needed in LOCAL (prod will typically succeed via metadata server)
-    impersonate_sa = os.getenv("CLOUD_RUN_INVOKER_SA")  # e.g. same SA your services run as
-
-    # google-auth is sync; don't block the event loop
-    return await asyncio.to_thread(
-        _fetch_id_token_sync, audience=audience, impersonate_sa=impersonate_sa
-    )
 
 async def get_kalshi_balance(tool_context: ToolContext) -> dict:
     """Get the current balance for a Kalshi account.
@@ -106,13 +47,13 @@ async def get_kalshi_balance(tool_context: ToolContext) -> dict:
         raise ValueError("account_name not set in session state")
     
     # Get auth token
-    # id_token = await get_id_token_for_cloud_run(poly_paper_url)
+    id_token = await get_id_token_cached(poly_paper_url)
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
             f"{poly_paper_url.rstrip('/')}/accounts/balance",
             params={"account_name": kalshi_account_name},
-            # headers={"Authorization": f"Bearer {id_token}"},
+            headers={"Authorization": f"Bearer {id_token}"},
         )
         response.raise_for_status()
         data = response.json()
@@ -162,13 +103,13 @@ async def list_new_markets(exclude_tickers: Optional[list[str]] = None) -> dict:
         params["exclude_tickers"] = exclude_tickers
     
     # Get auth token
-    # id_token = await get_id_token_for_cloud_run(poly_paper_url)
+    id_token = await get_id_token_cached(poly_paper_url)
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
             f"{poly_paper_url.rstrip('/')}/kalshi/markets",
             params=params,
-            # headers={"Authorization": f"Bearer {id_token}"},
+            headers={"Authorization": f"Bearer {id_token}"},
         )
         response.raise_for_status()
         data = response.json()
@@ -226,13 +167,13 @@ async def get_kalshi_positions(tool_context: ToolContext) -> dict:
         raise ValueError("account_name not set in session state")
     
     # Get auth token
-    # id_token = await get_id_token_for_cloud_run(poly_paper_url)
+    id_token = await get_id_token_cached(poly_paper_url)
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
             f"{poly_paper_url.rstrip('/')}/kalshi/positions",
             params={"account_name": kalshi_account_name},
-            # headers={"Authorization": f"Bearer {id_token}"},
+            headers={"Authorization": f"Bearer {id_token}"},
         )
         response.raise_for_status()
         data = response.json()
@@ -381,13 +322,13 @@ async def create_kalshi_strategy(
         payload["notes"] = notes
     
     # Get auth token
-    # id_token = await get_id_token_for_cloud_run(poly_paper_url)
+    id_token = await get_id_token_cached(poly_paper_url)
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             f"{poly_paper_url.rstrip('/')}/strategies",
             json=payload,
-            # headers={"Authorization": f"Bearer {id_token}"},
+            headers={"Authorization": f"Bearer {id_token}"},
         )
         response.raise_for_status()
         data = response.json()
@@ -471,13 +412,13 @@ async def get_active_kalshi_strategies(tool_context: ToolContext) -> dict:
         raise ValueError("account_name not set in session state")
     
     # Get auth token
-    # id_token = await get_id_token_for_cloud_run(poly_paper_url)
+    id_token = await get_id_token_cached(poly_paper_url)
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
             f"{poly_paper_url.rstrip('/')}/strategies/active",
             params={"account_name": kalshi_account_name},
-            # headers={"Authorization": f"Bearer {id_token}"},
+            headers={"Authorization": f"Bearer {id_token}"},
         )
         response.raise_for_status()
         data = response.json()
@@ -636,13 +577,13 @@ async def update_kalshi_strategy(
         payload["notes"] = notes
     
     # Get auth token
-    # id_token = await get_id_token_for_cloud_run(poly_paper_url)
+    id_token = await get_id_token_cached(poly_paper_url)
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.put(
             f"{poly_paper_url.rstrip('/')}/strategies",
             json=payload,
-            # headers={"Authorization": f"Bearer {id_token}"},
+            headers={"Authorization": f"Bearer {id_token}"},
         )
         response.raise_for_status()
         data = response.json()
@@ -703,13 +644,13 @@ async def remove_kalshi_strategy(strategy_id: str) -> dict:
         raise ValueError("POLY_PAPER_URL not set in environment")
     
     # Get auth token
-    # id_token = await get_id_token_for_cloud_run(poly_paper_url)
+    id_token = await get_id_token_cached(poly_paper_url)
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.delete(
             f"{poly_paper_url.rstrip('/')}/strategies",
             params={"strategy_id": strategy_id},
-            # headers={"Authorization": f"Bearer {id_token}"},
+            headers={"Authorization": f"Bearer {id_token}"},
         )
         response.raise_for_status()
         data = response.json()
