@@ -43,6 +43,7 @@ from kalshi_utils import (
     GetKalshiAccountValueHistoryResponse,
     GetKalshiBalanceResponse,
     GetKalshiMarketsResponse,
+    GetKalshiPositionsPnLResponse,
     KalshiMarketResponse,
     ProcessKalshiOrdersResponse,
     SellPositionAtMarketRequest,
@@ -54,6 +55,7 @@ from kalshi_utils import (
     get_kalshi_account_positions,
     get_kalshi_account_value_history_handler,
     get_kalshi_markets,
+    get_kalshi_positions_pnl_handler,
     process_kalshi_orders_handler,
     sell_position_at_market_handler,
     update_kalshi_account_value_handler,
@@ -516,6 +518,22 @@ async def get_kalshi_positions(
     """
     positions_data = await get_kalshi_account_positions(db, account_name)
     return GetKalshiAccountPositionsResponse(**positions_data)
+
+
+@app.get("/kalshi/positions/pnl", response_model=GetKalshiPositionsPnLResponse)
+async def get_kalshi_positions_pnl(
+    account_name: str, db: AsyncSession = Depends(get_db)
+) -> GetKalshiPositionsPnLResponse:
+    """
+    Get all positions for a Kalshi account with current P&L.
+    
+    This endpoint:
+    1. Retrieves all non-zero positions from the database
+    2. Calculates average cost from filled BUY orders
+    3. Fetches latest market prices from Kalshi API
+    4. Returns detailed P&L information (mid-market price based)
+    """
+    return await get_kalshi_positions_pnl_handler(account_name, db)
 
 
 @app.get("/kalshi/orders/filled", response_model=GetFilledKalshiOrdersResponse)

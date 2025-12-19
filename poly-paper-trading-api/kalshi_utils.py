@@ -23,6 +23,36 @@ from models.position import KalshiPosition
 from models.order import KalshiOrder, KalshiOrderSide, KalshiOrderAction, KalshiOrderType, KalshiOrderStatus
 
 
+class KalshiPositionItem(BaseModel):
+    """Simplified position item for API responses"""
+    ticker: str
+    side: str  # 'yes' or 'no'
+    position: int  # Absolute position size
+
+
+class GetKalshiAccountPositionsResponse(BaseModel):
+    """Response model for Kalshi account positions endpoint"""
+    positions: list[KalshiPositionItem]
+
+
+class KalshiPositionPnLItem(BaseModel):
+    ticker: str
+    side: str
+    position: int
+    avg_cost: Decimal
+    current_price: Decimal
+    current_value: Decimal
+    cash_pnl: Decimal
+    percent_pnl: Decimal
+
+
+class GetKalshiPositionsPnLResponse(BaseModel):
+    account_name: str
+    positions: list[KalshiPositionPnLItem]
+    total_cash_pnl: Decimal
+    total_current_value: Decimal
+
+
 async def _get_kalshi_account(db: AsyncSession, account_name: str) -> KalshiAccount:
     """
     Retrieve KalshiAccount from database by account name
@@ -308,6 +338,155 @@ async def get_kalshi_account_positions(db: AsyncSession, account_name: str) -> d
     return {
         'positions': formatted_positions
     }
+
+
+async def get_kalshi_positions_pnl_handler(
+    account_name: str, db: AsyncSession
+) -> GetKalshiPositionsPnLResponse:
+    """
+    Get all Kalshi positions for an account with current P&L.
+    
+    This handler:
+    1. Retrieves all non-zero positions from the database.
+    2. For each position, calculates the average cost from filled BUY orders.
+    3. Fetches the latest market prices for all tickers.
+    4. Calculates P&L based on mid-market prices.
+    """
+    # 1. Get the account by name
+    stmt = select(Account).where(Account.account_name == account_name)
+    result = await db.execute(stmt)
+    account = result.scalar_one_or_none()
+    
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Account '{account_name}' not found"
+        )
+        
+    # 2. Query non-zero positions
+    stmt = select(KalshiPosition).where(
+        KalshiPosition.account_id == account.account_id,
+        KalshiPosition.position != 0
+    )
+    result = await db.execute(stmt)
+    positions = result.scalars().all()
+    
+    if not positions:
+        return GetKalshiPositionsPnLResponse(
+            account_name=account_name,
+            positions=[],
+            total_cash_pnl=Decimal("0.00"),
+            total_current_value=Decimal("0.00")
+        )
+        
+    # 3. Get all tickers to fetch market data
+    tickers = [pos.ticker for pos in positions]
+    
+    base_url = "https://api.elections.kalshi.com"
+    path = '/trade-api/v2/markets'
+    
+    market_data_map = {}
+    async with httpx.AsyncClient() as client:
+        # Batch tickers 100 at a time
+        batch_size = 100
+        for i in range(0, len(tickers), batch_size):
+            batch_tickers = tickers[i:i + batch_size]
+            params = {'tickers': ','.join(batch_tickers)}
+            response = await client.get(f"{base_url}{path}", params=params)
+            response.raise_for_status()
+            data = response.json()
+            for m in data.get('markets', []):
+                market_data_map[m['ticker']] = m
+                
+    # 4. For each position, calculate cost and P&L
+    pnl_items = []
+    total_cash_pnl = Decimal("0.00")
+    total_current_value = Decimal("0.00")
+    
+    for pos in positions:
+        # Determine the side we bought to get this position
+        # pos > 0 means YES position, pos < 0 means NO position
+        target_side = KalshiOrderSide.YES if pos.position > 0 else KalshiOrderSide.NO
+        
+        # Get filled BUY and SELL orders for this ticker and side to calculate cost
+        # We process them in chronological order to correctly handle multiple buy/sell rounds (FIFO)
+        order_stmt = select(KalshiOrder).where(
+            KalshiOrder.account_id == account.account_id,
+            KalshiOrder.ticker == pos.ticker,
+            KalshiOrder.status == KalshiOrderStatus.FILLED,
+            KalshiOrder.side == target_side
+        ).order_by(KalshiOrder.created_at.asc())
+        
+        order_result = await db.execute(order_stmt)
+        filled_orders = order_result.scalars().all()
+        
+        # FIFO inventory calculation
+        inventory = []  # list of (count, price_cents)
+        for order in filled_orders:
+            if order.action == KalshiOrderAction.BUY:
+                inventory.append([order.count, order.price])
+            else:  # SELL
+                # Remove shares from inventory using FIFO
+                remaining_to_sell = order.count
+                while remaining_to_sell > 0 and inventory:
+                    if inventory[0][0] <= remaining_to_sell:
+                        remaining_to_sell -= inventory[0][0]
+                        inventory.pop(0)
+                    else:
+                        inventory[0][0] -= remaining_to_sell
+                        remaining_to_sell = 0
+        
+        total_remaining_count = sum(item[0] for item in inventory)
+        total_remaining_cost_cents = sum(item[0] * item[1] for item in inventory)
+        
+        avg_cost_cents = Decimal(total_remaining_cost_cents) / Decimal(total_remaining_count) if total_remaining_count > 0 else Decimal("0")
+        avg_cost_dollars = (avg_cost_cents / Decimal("100")).quantize(Decimal("0.0001"))
+        
+        current_position_size = abs(pos.position)
+        # current_cost_dollars should match total_remaining_cost_cents / 100
+        current_cost_dollars = (Decimal(total_remaining_cost_cents) / Decimal("100")).quantize(Decimal("0.00"))
+        
+        # Get current price from market data
+        m_data = market_data_map.get(pos.ticker)
+        if not m_data:
+            # Fallback if market data not found
+            current_price_dollars = avg_cost_dollars
+        else:
+            side_str = 'yes' if pos.position > 0 else 'no'
+            if side_str == 'yes':
+                bid = Decimal(str(m_data.get('yes_bid', 0))) / Decimal("100")
+                ask = Decimal(str(m_data.get('yes_ask', 0))) / Decimal("100")
+            else:
+                bid = Decimal(str(m_data.get('no_bid', 0))) / Decimal("100")
+                ask = Decimal(str(m_data.get('no_ask', 0))) / Decimal("100")
+            
+            # Use mid-point as requested
+            current_price_dollars = ((bid + ask) / Decimal("2")).quantize(Decimal("0.0001"))
+            
+        current_value_dollars = (current_price_dollars * Decimal(current_position_size)).quantize(Decimal("0.00"))
+        cash_pnl = (current_value_dollars - current_cost_dollars).quantize(Decimal("0.00"))
+        percent_pnl = ((cash_pnl / current_cost_dollars * Decimal("100")) if current_cost_dollars > 0 else Decimal("0")).quantize(Decimal("0.00"))
+        
+        pnl_items.append(KalshiPositionPnLItem(
+            ticker=pos.ticker,
+            side=side_str,
+            position=current_position_size,
+            avg_cost=avg_cost_dollars,
+            current_price=current_price_dollars,
+            current_value=current_value_dollars,
+            cash_pnl=cash_pnl,
+            percent_pnl=percent_pnl
+        ))
+        
+        total_cash_pnl += cash_pnl
+        total_current_value += current_value_dollars
+        
+    return GetKalshiPositionsPnLResponse(
+        account_name=account_name,
+        positions=pnl_items,
+        total_cash_pnl=total_cash_pnl,
+        total_current_value=total_current_value
+    )
 
 
 async def process_kalshi_orders_handler(
@@ -752,18 +931,6 @@ class GetKalshiBalanceResponse(BaseModel):
     balance: int  # Member's available balance in cents
     portfolio_value: int  # Member's portfolio value in cents
     updated_ts: int  # Unix timestamp of the last update
-
-
-class KalshiPositionItem(BaseModel):
-    """Model for a single Kalshi position"""
-    ticker: str
-    side: str  # 'yes' or 'no'
-    position: int  # Absolute position size
-
-
-class GetKalshiAccountPositionsResponse(BaseModel):
-    """Response model for Kalshi account positions endpoint"""
-    positions: list[KalshiPositionItem]
 
 
 class KalshiMarketResponse(BaseModel):
