@@ -4,13 +4,16 @@ from dotenv import load_dotenv
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai.types import Content, Part
+
 from agents.agent import root_agent
 from strategy_agent.agent import root_agent as strategy_agent
 from kalshi_strategy_agent.agent import root_agent as kalshi_strategy_agent, create_kalshi_agent
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -27,23 +30,33 @@ elif USE_STRATEGY:
 else:
     active_agent = root_agent
 
+
 # Get the directory where main.py is located
 AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 # Get GCP configuration from environment variables
 GCP_PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT")
 GCP_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION")
 REASONING_ENGINE_ID = os.getenv("REASONING_ENGINE_ID")
 
+
 # Use Vertex AI session service for persistent sessions.
 VERTEXAI_SESSION_SERVICE_URI = f"agentengine://projects/{GCP_PROJECT_ID}/locations/{GCP_LOCATION}/reasoningEngines/{REASONING_ENGINE_ID}"
+
+
 # Example allowed origins for CORS
 ALLOWED_ORIGINS = ["http://localhost", "http://localhost:8080", "*"]
+
+
 # Add CLIENT_URL from environment variable if set
 if os.environ.get("CLIENT_URL"):
     ALLOWED_ORIGINS.append(os.environ.get("CLIENT_URL"))
+
+
 # Set web=True if you intend to serve a web interface, False otherwise
 SERVE_WEB_INTERFACE = True
+
 
 # Call the function to get the FastAPI app instance
 # Ensure the agent directory name ('capital_agent') matches your agent folder
@@ -57,10 +70,12 @@ app: FastAPI = get_fast_api_app(
 
 class RunAgentRequest(BaseModel):
     """Request body for run_agent endpoint."""
+
     model_name: str = Field(
-        default='gemini',
-        description="Model to use for the agent. Options: 'openai', 'gemini', 'claude', 'grok', 'qwen', 'kimi'"
+        default="gemini",
+        description="Model to use for the agent. Options: 'openai', 'gemini', 'claude', 'grok', 'qwen', 'kimi'",
     )
+
 
 # Additional endpoint: run_agent
 # This endpoint creates a session and sends a message to the agent with hard-coded values
@@ -75,7 +90,12 @@ async def run_agent(request: RunAgentRequest = RunAgentRequest()):
     Returns:
         Response from the agent run endpoint
     """
-    message_text = "Review my current strategy and positions. Get the latest market data and then either create or update the strategies based on current market conditions. Note: This is an automatic message, so please proceed without asking follow-up questions."
+    message_text = (
+        "Review my current strategy and positions. Get the latest market data and "
+        "then either create/update/remove the strategies based on current market "
+        "conditions. Note: This is an automatic message, so please proceed "
+        "without asking follow-up questions."
+    )
     app_name = "agents"
     user_id = "user"
     session_id = "session"
@@ -85,34 +105,29 @@ async def run_agent(request: RunAgentRequest = RunAgentRequest()):
     session_service = InMemorySessionService()
     await session_service.create_session(
         app_name=app_name,
-        user_id=user_id, 
+        user_id=user_id,
         session_id=session_id,
         state={
             "account_name": model_name,
-        }
+        },
     )
 
     # Initialize Runner
     runner = Runner(
         agent=create_kalshi_agent(model_name=model_name),
         session_service=session_service,
-        app_name=app_name
+        app_name=app_name,
     )
 
     # Create Content object
-    user_content = Content(
-        role="user",
-        parts=[Part(text=message_text)]
-    )
+    user_content = Content(role="user", parts=[Part(text=message_text)])
 
     try:
         # Run the agent asynchronously
         # We need to collect the response text from the events
         response_text = ""
         async for event in runner.run_async(
-            user_id=user_id,
-            session_id=session_id,
-            new_message=user_content
+            user_id=user_id, session_id=session_id, new_message=user_content
         ):
             # Check if the event has content and parts with text
             if event.content and event.content.parts:
@@ -124,12 +139,8 @@ async def run_agent(request: RunAgentRequest = RunAgentRequest()):
             "candidates": [
                 {
                     "content": {
-                        "parts": [
-                            {
-                                "text": response_text
-                            }
-                        ],
-                        "role": "model"
+                        "parts": [{"text": response_text}],
+                        "role": "model",
                     }
                 }
             ]
@@ -139,8 +150,9 @@ async def run_agent(request: RunAgentRequest = RunAgentRequest()):
         print(f"Error running agent: {type(e).__name__}: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to run agent: {type(e).__name__}: {str(e)}"
+            detail=f"Failed to run agent: {type(e).__name__}: {str(e)}",
         )
+
 
 if __name__ == "__main__":
     # Use the PORT environment variable provided by Cloud Run, defaulting to 8080
