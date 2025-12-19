@@ -106,13 +106,13 @@ async def get_kalshi_balance(tool_context: ToolContext) -> dict:
         raise ValueError("account_name not set in session state")
     
     # Get auth token
-    id_token = await get_id_token_for_cloud_run(poly_paper_url)
+    # id_token = await get_id_token_for_cloud_run(poly_paper_url)
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
             f"{poly_paper_url.rstrip('/')}/accounts/balance",
             params={"account_name": kalshi_account_name},
-            headers={"Authorization": f"Bearer {id_token}"},
+            # headers={"Authorization": f"Bearer {id_token}"},
         )
         response.raise_for_status()
         data = response.json()
@@ -162,13 +162,13 @@ async def list_new_markets(exclude_tickers: Optional[list[str]] = None) -> dict:
         params["exclude_tickers"] = exclude_tickers
     
     # Get auth token
-    id_token = await get_id_token_for_cloud_run(poly_paper_url)
+    # id_token = await get_id_token_for_cloud_run(poly_paper_url)
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
             f"{poly_paper_url.rstrip('/')}/kalshi/markets",
             params=params,
-            headers={"Authorization": f"Bearer {id_token}"},
+            # headers={"Authorization": f"Bearer {id_token}"},
         )
         response.raise_for_status()
         data = response.json()
@@ -226,13 +226,13 @@ async def get_kalshi_positions(tool_context: ToolContext) -> dict:
         raise ValueError("account_name not set in session state")
     
     # Get auth token
-    id_token = await get_id_token_for_cloud_run(poly_paper_url)
+    # id_token = await get_id_token_for_cloud_run(poly_paper_url)
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
             f"{poly_paper_url.rstrip('/')}/kalshi/positions",
             params={"account_name": kalshi_account_name},
-            headers={"Authorization": f"Bearer {id_token}"},
+            # headers={"Authorization": f"Bearer {id_token}"},
         )
         response.raise_for_status()
         data = response.json()
@@ -381,13 +381,13 @@ async def create_kalshi_strategy(
         payload["notes"] = notes
     
     # Get auth token
-    id_token = await get_id_token_for_cloud_run(poly_paper_url)
+    # id_token = await get_id_token_for_cloud_run(poly_paper_url)
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             f"{poly_paper_url.rstrip('/')}/strategies",
             json=payload,
-            headers={"Authorization": f"Bearer {id_token}"},
+            # headers={"Authorization": f"Bearer {id_token}"},
         )
         response.raise_for_status()
         data = response.json()
@@ -471,13 +471,13 @@ async def get_active_kalshi_strategies(tool_context: ToolContext) -> dict:
         raise ValueError("account_name not set in session state")
     
     # Get auth token
-    id_token = await get_id_token_for_cloud_run(poly_paper_url)
+    # id_token = await get_id_token_for_cloud_run(poly_paper_url)
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
             f"{poly_paper_url.rstrip('/')}/strategies/active",
             params={"account_name": kalshi_account_name},
-            headers={"Authorization": f"Bearer {id_token}"},
+            # headers={"Authorization": f"Bearer {id_token}"},
         )
         response.raise_for_status()
         data = response.json()
@@ -636,13 +636,13 @@ async def update_kalshi_strategy(
         payload["notes"] = notes
     
     # Get auth token
-    id_token = await get_id_token_for_cloud_run(poly_paper_url)
+    # id_token = await get_id_token_for_cloud_run(poly_paper_url)
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.put(
             f"{poly_paper_url.rstrip('/')}/strategies",
             json=payload,
-            headers={"Authorization": f"Bearer {id_token}"},
+            # headers={"Authorization": f"Bearer {id_token}"},
         )
         response.raise_for_status()
         data = response.json()
@@ -703,13 +703,13 @@ async def remove_kalshi_strategy(strategy_id: str) -> dict:
         raise ValueError("POLY_PAPER_URL not set in environment")
     
     # Get auth token
-    id_token = await get_id_token_for_cloud_run(poly_paper_url)
+    # id_token = await get_id_token_for_cloud_run(poly_paper_url)
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.delete(
             f"{poly_paper_url.rstrip('/')}/strategies",
             params={"strategy_id": strategy_id},
-            headers={"Authorization": f"Bearer {id_token}"},
+            # headers={"Authorization": f"Bearer {id_token}"},
         )
         response.raise_for_status()
         data = response.json()
